@@ -310,11 +310,7 @@ impl ApplicationHandler for App {
                     }
                     Key::Character(c) if ctrl && c == "r" => {
                         self.toolbar.toggle_recording();
-                        if self.toolbar.is_recording {
-                            self.start_recording();
-                        } else {
-                            self.stop_recording();
-                        }
+                        // recording_toggled flag is handled in RedrawRequested
                     }
                     _ => {}
                 }
