@@ -9,26 +9,9 @@ use v4l::io::traits::CaptureStream;
 use v4l::video::Capture;
 use v4l::Device;
 
-use super::format::{CaptureFormat, Frame, PixelFormat, mjpeg_to_rgb, yuyv_to_rgb};
+use crate::capture::format::{CaptureFormat, Frame, PixelFormat, mjpeg_to_rgb, yuyv_to_rgb};
 
-/// Trait for video capture sources.
-pub trait VideoSource {
-    /// Returns all supported capture formats, sorted by resolution (highest first)
-    /// then fps (highest first).
-    fn supported_formats(&self) -> Vec<CaptureFormat>;
-
-    /// Configures the device to use the given format.
-    fn set_format(&mut self, format: &CaptureFormat) -> Result<()>;
-
-    /// Starts the capture stream.
-    fn start(&mut self) -> Result<()>;
-
-    /// Returns the next decoded RGB frame from the stream.
-    fn next_frame(&mut self) -> Result<Frame>;
-
-    /// Stops the capture stream.
-    fn stop(&mut self) -> Result<()>;
-}
+use super::VideoSource;
 
 /// V4L2 capture backend using mmap streaming.
 pub struct V4l2Source {
