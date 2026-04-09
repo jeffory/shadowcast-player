@@ -1,0 +1,75 @@
+<h2>Toolbar Layout</h2>
+<p class="subtitle">Which arrangement of controls feels right for the bottom overlay?</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Centered Controls</h3>
+      <p>All controls grouped in the center. Clean, minimal look.</p>
+      <div class="mockup" style="margin-top: 12px;">
+        <div class="mockup-header">Preview</div>
+        <div class="mockup-body" style="background: #1a1a2e; color: #e0e0e0; padding: 0; position: relative; height: 200px;">
+          <div style="display: flex; align-items: center; justify-content: center; height: 170px; color: #555; font-size: 14px;">
+            ▶ Video Stream
+          </div>
+          <div style="position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.75); padding: 8px 16px; display: flex; align-items: center; justify-content: center; gap: 16px; font-size: 13px; backdrop-filter: blur(8px); border-top: 1px solid rgba(255,255,255,0.1);">
+            <span style="opacity: 0.8;">🔊 ━━━━○━━</span>
+            <span style="background: rgba(255,255,255,0.15); padding: 4px 10px; border-radius: 4px; font-size: 11px;">1080p60</span>
+            <span style="color: #ff4444;">⏺</span>
+            <span>📸</span>
+            <span style="color: #666; font-size: 10px;">00:00:00</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Spread Layout</h3>
+      <p>Volume left, resolution center, record/screenshot right. Balanced spacing.</p>
+      <div class="mockup" style="margin-top: 12px;">
+        <div class="mockup-header">Preview</div>
+        <div class="mockup-body" style="background: #1a1a2e; color: #e0e0e0; padding: 0; position: relative; height: 200px;">
+          <div style="display: flex; align-items: center; justify-content: center; height: 170px; color: #555; font-size: 14px;">
+            ▶ Video Stream
+          </div>
+          <div style="position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.75); padding: 8px 16px; display: flex; align-items: center; justify-content: space-between; font-size: 13px; backdrop-filter: blur(8px); border-top: 1px solid rgba(255,255,255,0.1);">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="opacity: 0.8;">🔊 ━━━━○━━</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="background: rgba(255,255,255,0.15); padding: 4px 10px; border-radius: 4px; font-size: 11px;">1080p60 ▾</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <span style="color: #ff4444;">⏺ REC</span>
+              <span>📸</span>
+              <span style="color: #666; font-size: 10px;">00:00:00</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Minimal + Expand</h3>
+      <p>Only a small translucent toggle button visible by default. Full toolbar slides up on click.</p>
+      <div class="mockup" style="margin-top: 12px;">
+        <div class="mockup-header">Preview — Collapsed State</div>
+        <div class="mockup-body" style="background: #1a1a2e; color: #e0e0e0; padding: 0; position: relative; height: 200px;">
+          <div style="display: flex; align-items: center; justify-content: center; height: 200px; color: #555; font-size: 14px;">
+            ▶ Video Stream
+          </div>
+          <div style="position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); background: rgba(255,255,255,0.12); padding: 4px 20px; border-radius: 12px; font-size: 10px; color: rgba(255,255,255,0.5); cursor: pointer;">
+            ▲ Controls
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
