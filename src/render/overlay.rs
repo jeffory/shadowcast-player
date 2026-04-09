@@ -68,15 +68,17 @@ impl Toolbar {
             }
         }
 
-        // Toolbar panel — only when visible
+        // Toolbar — only when visible, floating centered at bottom with padding
         if self.visible {
-            egui::TopBottomPanel::bottom("toolbar_panel")
-                .frame(
+            egui::Area::new(egui::Id::new("toolbar_panel"))
+                .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
                     egui::Frame::new()
                         .fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 190))
-                        .inner_margin(8.0),
-                )
-                .show(ctx, |ui| {
+                        .inner_margin(egui::Margin::symmetric(16, 8))
+                        .corner_radius(8.0)
+                        .show(ui, |ui| {
                     // Reset auto-hide when pointer is over toolbar
                     if ui.rect_contains_pointer(ui.max_rect()) {
                         self.last_mouse_over = Some(Instant::now());
@@ -85,10 +87,6 @@ impl Toolbar {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 16.0;
 
-                        // Center the controls
-                        ui.with_layout(
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
                                 // Volume
                                 ui.label("🔊");
                                 let old_volume = self.volume;
@@ -180,8 +178,7 @@ impl Toolbar {
                                             .color(egui::Color32::GRAY),
                                     );
                                 }
-                            },
-                        );
+                    });
                     });
                 });
         }
