@@ -316,6 +316,13 @@ impl ApplicationHandler for App {
                 }
             }
 
+            WindowEvent::CursorMoved { .. } => {
+                self.toolbar.on_mouse_move();
+                if let Some(window) = &self.window {
+                    window.set_cursor_visible(true);
+                }
+            }
+
             WindowEvent::RedrawRequested => {
                 // 1. Get next video frame
                 if let Some(video) = &mut self.video_source {
@@ -365,6 +372,13 @@ impl ApplicationHandler for App {
                         self.start_recording();
                     } else {
                         self.stop_recording();
+                    }
+                }
+
+                // Hide cursor when toolbar is hidden (VLC-style)
+                if !self.toolbar.visible {
+                    if let Some(window) = &self.window {
+                        window.set_cursor_visible(false);
                     }
                 }
 

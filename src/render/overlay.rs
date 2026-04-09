@@ -32,11 +32,9 @@ impl Toolbar {
         }
     }
 
-    pub fn toggle_visible(&mut self) {
-        self.visible = !self.visible;
-        if self.visible {
-            self.last_mouse_over = Some(Instant::now());
-        }
+    pub fn on_mouse_move(&mut self) {
+        self.visible = true;
+        self.last_mouse_over = Some(Instant::now());
     }
 
     pub fn toggle_recording(&mut self) {
@@ -57,31 +55,13 @@ impl Toolbar {
 
     pub fn ui(&mut self, ctx: &egui::Context, formats: &[CaptureFormat]) {
         // Auto-hide check
-        if self.visible && !self.is_recording {
+        if self.visible {
             if let Some(last) = self.last_mouse_over {
                 if last.elapsed() > self.auto_hide_delay {
                     self.visible = false;
                 }
             }
         }
-
-        // Toggle pill button — always visible at bottom center
-        egui::Area::new(egui::Id::new("toolbar_toggle"))
-            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -8.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                let label = if self.visible {
-                    "▼ Hide"
-                } else {
-                    "▲ Controls"
-                };
-                let button = egui::Button::new(label)
-                    .fill(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30))
-                    .corner_radius(12.0);
-                if ui.add(button).clicked() {
-                    self.toggle_visible();
-                }
-            });
 
         // Toolbar panel — only when visible
         if self.visible {
