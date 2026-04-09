@@ -1,10 +1,9 @@
 [package]
-name = "genki-arcade"
+name = "shadowcast-player"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-v4l = "0.14"
 cpal = "0.15"
 wgpu = "24"
 winit = "0.30"
@@ -23,3 +22,21 @@ pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 env_logger = "0.11"
 log = "0.4"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+v4l = "0.14"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-av-foundation = "0.3"
+objc2-core-media = "0.3"
+objc2-core-video = "0.3"
+dispatch2 = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+] }

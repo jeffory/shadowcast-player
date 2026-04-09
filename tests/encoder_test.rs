@@ -1,4 +1,4 @@
-use genki_arcade::record::encoder::{recording_path, EncoderConfig};
+use shadowcast_player::record::encoder::{recording_path, EncoderConfig};
 
 #[test]
 fn test_recording_path_format() {
@@ -6,7 +6,7 @@ fn test_recording_path_format() {
     let filename = path.file_name().unwrap().to_str().unwrap();
     assert!(filename.starts_with("recording-"));
     assert!(filename.ends_with(".mp4"));
-    assert!(path.parent().unwrap().ends_with("genki-arcade"));
+    assert!(path.parent().unwrap().ends_with("shadowcast-player"));
 }
 
 #[test]

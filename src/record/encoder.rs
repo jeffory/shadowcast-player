@@ -13,7 +13,7 @@ pub fn recording_path() -> PathBuf {
         .and_then(|d| d.video_dir().map(|p| p.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."));
 
-    let dir = base.join("genki-arcade");
+    let dir = base.join("shadowcast-player");
     let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S");
     dir.join(format!("recording-{}.mp4", timestamp))
 }
@@ -292,24 +292,25 @@ fn encode_loop(
                 frame.set_rate(config.audio_sample_rate);
                 frame.set_pts(Some(audio_pts));
 
+                // Zero-fill frame planes to avoid uninitialized padding
+                for ch in 0..channels {
+                    frame.data_mut(ch).fill(0);
+                }
+
                 // Fill planar audio frame: deinterleave channels
                 for ch in 0..channels {
-                    let plane = frame.data_mut(ch);
+                    let plane = frame.plane_mut::<f32>(ch);
                     for i in 0..samples_per_frame {
-                        let val = chunk[i * channels + ch];
-                        let bytes = val.to_ne_bytes();
-                        let offset = i * 4; // f32 = 4 bytes
-                        if offset + 4 <= plane.len() {
-                            plane[offset..offset + 4].copy_from_slice(&bytes);
-                        }
+                        plane[i] = chunk[i * channels + ch];
                     }
                 }
 
                 audio_pts += samples_per_frame as i64;
 
-                audio_enc
-                    .send_frame(&frame)
-                    .context("Failed to send audio frame")?;
+                if let Err(e) = audio_enc.send_frame(&frame) {
+                    log::warn!("Audio encode error (skipping frame): {}", e);
+                    continue;
+                }
 
                 let mut packet = ffmpeg_next::Packet::empty();
                 while audio_enc.receive_packet(&mut packet).is_ok() {
@@ -327,6 +328,53 @@ fn encode_loop(
 
         if !did_work {
             std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    // Flush remaining audio samples (pad with silence to fill a complete frame)
+    let channels = config.audio_channels as usize;
+    let samples_per_frame = if audio_frame_size > 0 {
+        audio_frame_size
+    } else {
+        1024
+    };
+    let floats_per_frame = samples_per_frame * channels;
+    if !audio_buffer.is_empty() {
+        audio_buffer.resize(floats_per_frame, 0.0);
+        let chunk: Vec<f32> = audio_buffer.drain(..floats_per_frame).collect();
+
+        let mut frame = ffmpeg_next::frame::Audio::new(
+            format::Sample::F32(format::sample::Type::Planar),
+            samples_per_frame,
+            ChannelLayout::STEREO,
+        );
+        frame.set_rate(config.audio_sample_rate);
+        frame.set_pts(Some(audio_pts));
+
+        for ch in 0..channels {
+            frame.data_mut(ch).fill(0);
+        }
+        for ch in 0..channels {
+            let plane = frame.plane_mut::<f32>(ch);
+            for i in 0..samples_per_frame {
+                plane[i] = chunk[i * channels + ch];
+            }
+        }
+
+        if let Err(e) = audio_enc.send_frame(&frame) {
+            log::warn!("Audio encode error flushing final frame: {}", e);
+        } else {
+            let mut packet = ffmpeg_next::Packet::empty();
+            while audio_enc.receive_packet(&mut packet).is_ok() {
+                packet.set_stream(audio_stream_index);
+                packet.rescale_ts(
+                    (1, config.audio_sample_rate as i32),
+                    audio_time_base,
+                );
+                packet
+                    .write_interleaved(&mut output_ctx)
+                    .context("Failed to write audio packet")?;
+            }
         }
     }
 

@@ -1,4 +1,4 @@
-use genki_arcade::record::screenshot::screenshot_path;
+use shadowcast_player::record::screenshot::screenshot_path;
 
 #[test]
 fn test_screenshot_path_format() {
@@ -6,7 +6,7 @@ fn test_screenshot_path_format() {
     let filename = path.file_name().unwrap().to_str().unwrap();
     assert!(filename.starts_with("screenshot-"));
     assert!(filename.ends_with(".png"));
-    assert!(path.parent().unwrap().ends_with("genki-arcade"));
+    assert!(path.parent().unwrap().ends_with("shadowcast-player"));
 }
 
 #[test]

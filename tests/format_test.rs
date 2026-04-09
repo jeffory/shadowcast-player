@@ -1,4 +1,4 @@
-use genki_arcade::capture::format::{mjpeg_to_rgb, yuyv_to_rgb, CaptureFormat, PixelFormat};
+use shadowcast_player::capture::format::{mjpeg_to_rgb, yuyv_to_rgb, CaptureFormat, PixelFormat};
 
 #[test]
 fn test_capture_format_display_1080p60() {

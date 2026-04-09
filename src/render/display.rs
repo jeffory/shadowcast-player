@@ -57,7 +57,7 @@ pub struct DisplayRenderer {
 impl DisplayRenderer {
     pub async fn new(window: Arc<Window>) -> Result<Self> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
+            backends: wgpu::Backends::all(),
             ..Default::default()
         });
 
@@ -74,7 +74,7 @@ impl DisplayRenderer {
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                label: Some("genki-arcade device"),
+                label: Some("shadowcast-player device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 ..Default::default()
@@ -241,6 +241,13 @@ impl DisplayRenderer {
             uniform_bind_group,
             _uniform_bind_group_layout: uniform_bind_group_layout,
         })
+    }
+
+    /// Clears the displayed frame, causing the render pass to show black.
+    pub fn clear_frame(&mut self) {
+        self.bind_group = None;
+        self.texture = None;
+        self.texture_view = None;
     }
 
     pub fn upload_frame(&mut self, rgb_data: &[u8], width: u32, height: u32) {

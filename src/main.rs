@@ -1,4 +1,4 @@
-use genki_arcade::app::App;
+use shadowcast_player::app::App;
 use winit::event_loop::EventLoop;
 
 fn main() {

@@ -10,7 +10,7 @@ pub fn screenshot_path() -> PathBuf {
         .and_then(|d| d.picture_dir().map(|p| p.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."));
 
-    let dir = base.join("genki-arcade");
+    let dir = base.join("shadowcast-player");
     let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S");
     dir.join(format!("screenshot-{}.png", timestamp))
 }

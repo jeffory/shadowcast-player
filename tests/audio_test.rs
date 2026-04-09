@@ -1,4 +1,4 @@
-use genki_arcade::capture::audio::scale_volume;
+use shadowcast_player::capture::audio::scale_volume;
 
 #[test]
 fn test_scale_volume_full() {
