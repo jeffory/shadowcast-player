@@ -1,0 +1,25 @@
+[package]
+name = "genki-arcade"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+v4l = "0.14"
+cpal = "0.15"
+wgpu = "24"
+winit = "0.30"
+egui = "0.31"
+egui-wgpu = "0.31"
+egui-winit = "0.31"
+zune-jpeg = "0.5"
+ffmpeg-next = "7"
+image = "0.25"
+directories = "6"
+chrono = "0.4"
+crossbeam-channel = "0.5"
+ringbuf = "0.4"
+anyhow = "1"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+env_logger = "0.11"
+log = "0.4"
