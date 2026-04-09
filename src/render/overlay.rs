@@ -19,6 +19,12 @@ pub struct Toolbar {
     pub scale_mode_changed: bool,
 }
 
+impl Default for Toolbar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Toolbar {
     pub fn new() -> Self {
         Self {
@@ -79,13 +85,13 @@ impl Toolbar {
                         .inner_margin(egui::Margin::symmetric(16, 8))
                         .corner_radius(8.0)
                         .show(ui, |ui| {
-                    // Reset auto-hide when pointer is over toolbar
-                    if ui.rect_contains_pointer(ui.max_rect()) {
-                        self.last_mouse_over = Some(Instant::now());
-                    }
+                            // Reset auto-hide when pointer is over toolbar
+                            if ui.rect_contains_pointer(ui.max_rect()) {
+                                self.last_mouse_over = Some(Instant::now());
+                            }
 
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 16.0;
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 16.0;
 
                                 // Volume
                                 ui.label("🔊");
@@ -178,8 +184,8 @@ impl Toolbar {
                                             .color(egui::Color32::GRAY),
                                     );
                                 }
-                    });
-                    });
+                            });
+                        });
                 });
         }
 

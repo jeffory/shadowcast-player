@@ -73,12 +73,15 @@ impl DisplayRenderer {
             .ok_or_else(|| anyhow::anyhow!("Failed to find a suitable GPU adapter"))?;
 
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("shadowcast-player device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                ..Default::default()
-            }, None)
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("shadowcast-player device"),
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::default(),
+                    ..Default::default()
+                },
+                None,
+            )
             .await?;
 
         let device = Arc::new(device);
@@ -377,11 +380,15 @@ impl DisplayRenderer {
 
     pub fn render_frame(&self) -> Result<(wgpu::SurfaceTexture, wgpu::CommandEncoder)> {
         let output = self.surface.get_current_texture()?;
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("render encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("render encoder"),
+            });
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -399,9 +406,9 @@ impl DisplayRenderer {
                 occlusion_query_set: None,
             });
 
-            if self.bind_group.is_some() {
+            if let Some(bind_group) = &self.bind_group {
                 render_pass.set_pipeline(&self.render_pipeline);
-                render_pass.set_bind_group(0, self.bind_group.as_ref().unwrap(), &[]);
+                render_pass.set_bind_group(0, bind_group, &[]);
                 render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
                 render_pass.draw(0..6, 0..1);
             }

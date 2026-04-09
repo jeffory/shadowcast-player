@@ -47,6 +47,12 @@ pub struct FfmpegEncoder {
     output_path: PathBuf,
 }
 
+impl Default for FfmpegEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FfmpegEncoder {
     pub fn new() -> Self {
         Self {
@@ -127,7 +133,10 @@ fn encode_loop(
         .context("H264 encoder not found")?;
 
     let video_ctx = ffmpeg_next::codec::context::Context::new_with_codec(video_codec);
-    let mut video_enc = video_ctx.encoder().video().context("Failed to create video encoder")?;
+    let mut video_enc = video_ctx
+        .encoder()
+        .video()
+        .context("Failed to create video encoder")?;
 
     video_enc.set_width(config.width);
     video_enc.set_height(config.height);
@@ -154,11 +163,14 @@ fn encode_loop(
     }
 
     // --- Audio encoder setup ---
-    let audio_codec = ffmpeg_next::encoder::find(ffmpeg_next::codec::Id::AAC)
-        .context("AAC encoder not found")?;
+    let audio_codec =
+        ffmpeg_next::encoder::find(ffmpeg_next::codec::Id::AAC).context("AAC encoder not found")?;
 
     let audio_ctx = ffmpeg_next::codec::context::Context::new_with_codec(audio_codec);
-    let mut audio_enc = audio_ctx.encoder().audio().context("Failed to create audio encoder")?;
+    let mut audio_enc = audio_ctx
+        .encoder()
+        .audio()
+        .context("Failed to create audio encoder")?;
 
     audio_enc.set_rate(config.audio_sample_rate as i32);
     audio_enc.set_channel_layout(ChannelLayout::STEREO);
@@ -215,10 +227,7 @@ fn encode_loop(
 
     // Main encoding loop
     loop {
-        if stop_flag.load(Ordering::SeqCst)
-            && video_rx.is_empty()
-            && audio_rx.is_empty()
-        {
+        if stop_flag.load(Ordering::SeqCst) && video_rx.is_empty() && audio_rx.is_empty() {
             break;
         }
 
@@ -229,8 +238,11 @@ fn encode_loop(
             did_work = true;
             let expected_size = (config.width * config.height * 3) as usize;
             if rgb_data.len() == expected_size {
-                let mut src_frame =
-                    ffmpeg_next::frame::Video::new(format::Pixel::RGB24, config.width, config.height);
+                let mut src_frame = ffmpeg_next::frame::Video::new(
+                    format::Pixel::RGB24,
+                    config.width,
+                    config.height,
+                );
                 // Copy RGB data into source frame, row by row respecting stride
                 let stride = src_frame.stride(0);
                 let row_bytes = (config.width * 3) as usize;
@@ -315,10 +327,7 @@ fn encode_loop(
                 let mut packet = ffmpeg_next::Packet::empty();
                 while audio_enc.receive_packet(&mut packet).is_ok() {
                     packet.set_stream(audio_stream_index);
-                    packet.rescale_ts(
-                        (1, config.audio_sample_rate as i32),
-                        audio_time_base,
-                    );
+                    packet.rescale_ts((1, config.audio_sample_rate as i32), audio_time_base);
                     packet
                         .write_interleaved(&mut output_ctx)
                         .context("Failed to write audio packet")?;
@@ -367,10 +376,7 @@ fn encode_loop(
             let mut packet = ffmpeg_next::Packet::empty();
             while audio_enc.receive_packet(&mut packet).is_ok() {
                 packet.set_stream(audio_stream_index);
-                packet.rescale_ts(
-                    (1, config.audio_sample_rate as i32),
-                    audio_time_base,
-                );
+                packet.rescale_ts((1, config.audio_sample_rate as i32), audio_time_base);
                 packet
                     .write_interleaved(&mut output_ctx)
                     .context("Failed to write audio packet")?;
@@ -379,7 +385,9 @@ fn encode_loop(
     }
 
     // Flush video encoder
-    video_enc.send_eof().context("Failed to flush video encoder")?;
+    video_enc
+        .send_eof()
+        .context("Failed to flush video encoder")?;
     let mut packet = ffmpeg_next::Packet::empty();
     while video_enc.receive_packet(&mut packet).is_ok() {
         packet.set_stream(video_stream_index);
@@ -390,14 +398,13 @@ fn encode_loop(
     }
 
     // Flush audio encoder
-    audio_enc.send_eof().context("Failed to flush audio encoder")?;
+    audio_enc
+        .send_eof()
+        .context("Failed to flush audio encoder")?;
     let mut packet = ffmpeg_next::Packet::empty();
     while audio_enc.receive_packet(&mut packet).is_ok() {
         packet.set_stream(audio_stream_index);
-        packet.rescale_ts(
-            (1, config.audio_sample_rate as i32),
-            audio_time_base,
-        );
+        packet.rescale_ts((1, config.audio_sample_rate as i32), audio_time_base);
         packet
             .write_interleaved(&mut output_ctx)
             .context("Failed to write flushed audio packet")?;

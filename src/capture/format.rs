@@ -19,18 +19,18 @@ pub struct CaptureFormat {
 impl fmt::Display for CaptureFormat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Known heights with their standard widths
-        let standard = match (self.height, self.width) {
-            (480, 640 | 720) => true,
-            (576, 720) => true,
-            (600, 800) => true,
-            (720, 1280) => true,
-            (768, 1024) => true,
-            (960, 1280) => true,
-            (1024, 1280) => true,
-            (1080, 1920) => true,
-            (1440, 2560) => true,
-            _ => false,
-        };
+        let standard = matches!(
+            (self.height, self.width),
+            (480, 640 | 720)
+                | (576, 720)
+                | (600, 800)
+                | (720, 1280)
+                | (768, 1024)
+                | (960, 1280)
+                | (1024, 1280)
+                | (1080, 1920)
+                | (1440, 2560)
+        );
 
         if standard {
             write!(f, "{}p{}", self.height, self.fps)

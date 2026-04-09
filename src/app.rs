@@ -64,6 +64,12 @@ impl Drop for App {
     }
 }
 
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl App {
     pub fn new() -> Self {
         Self {
@@ -156,7 +162,11 @@ impl App {
         let Some(video) = &mut self.video_source else {
             return;
         };
-        let Some(format) = self.formats.get(self.toolbar.selected_format_index).cloned() else {
+        let Some(format) = self
+            .formats
+            .get(self.toolbar.selected_format_index)
+            .cloned()
+        else {
             return;
         };
 
@@ -224,7 +234,10 @@ impl App {
             None => return, // No device found, try again later
         };
 
-        log::info!("Attempting to reconnect to capture device at {}", video_path);
+        log::info!(
+            "Attempting to reconnect to capture device at {}",
+            video_path
+        );
 
         match PlatformVideoSource::new(video_path) {
             Ok(mut source) => {
@@ -313,13 +326,8 @@ impl ApplicationHandler for App {
             None,
         );
 
-        let egui_renderer = egui_wgpu::Renderer::new(
-            &renderer.device,
-            renderer.surface_format(),
-            None,
-            1,
-            false,
-        );
+        let egui_renderer =
+            egui_wgpu::Renderer::new(&renderer.device, renderer.surface_format(), None, 1, false);
 
         self.egui_state = Some(egui_state);
         self.egui_renderer = Some(egui_renderer);
@@ -506,7 +514,10 @@ impl ApplicationHandler for App {
                             if self.source_error_count >= DISCONNECT_THRESHOLD
                                 && self.source_connected
                             {
-                                log::warn!("Video source disconnected after {} errors", self.source_error_count);
+                                log::warn!(
+                                    "Video source disconnected after {} errors",
+                                    self.source_error_count
+                                );
                                 self.source_connected = false;
                                 self.audio_connected = false;
                                 // Drop the stale source and clear the display
@@ -518,7 +529,11 @@ impl ApplicationHandler for App {
                             } else if self.source_error_count == 1 {
                                 log::warn!("Frame capture error: {}", e);
                             } else {
-                                log::debug!("Frame capture error ({}x): {}", self.source_error_count, e);
+                                log::debug!(
+                                    "Frame capture error ({}x): {}",
+                                    self.source_error_count,
+                                    e
+                                );
                             }
                         }
                     }
@@ -533,11 +548,7 @@ impl ApplicationHandler for App {
                 if self.toolbar.screenshot_requested {
                     self.toolbar.screenshot_requested = false;
                     if let Some(rgb) = &self.last_frame_rgb {
-                        take_screenshot(
-                            rgb.clone(),
-                            self.last_frame_width,
-                            self.last_frame_height,
-                        );
+                        take_screenshot(rgb.clone(), self.last_frame_width, self.last_frame_height);
                     }
                 }
 
@@ -624,9 +635,9 @@ impl ApplicationHandler for App {
                 });
                 egui_state.handle_platform_output(window, full_output.platform_output);
 
-                let clipped =
-                    self.egui_ctx
-                        .tessellate(full_output.shapes, full_output.pixels_per_point);
+                let clipped = self
+                    .egui_ctx
+                    .tessellate(full_output.shapes, full_output.pixels_per_point);
                 let screen_desc = egui_wgpu::ScreenDescriptor {
                     size_in_pixels: [
                         renderer.surface_config.width,
@@ -651,19 +662,18 @@ impl ApplicationHandler for App {
                 // Render egui on top of video
                 let view = output.texture.create_view(&Default::default());
                 {
-                    let render_pass =
-                        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("egui pass"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &view,
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Load,
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            })],
-                            ..Default::default()
-                        });
+                    let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("egui pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        ..Default::default()
+                    });
                     let mut render_pass = render_pass.forget_lifetime();
                     egui_renderer.render(&mut render_pass, &clipped, &screen_desc);
                 }
