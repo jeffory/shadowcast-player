@@ -65,9 +65,14 @@ jobs:
       - name: Install Windows dependencies
         if: runner.os == 'Windows'
         run: |
-          vcpkg install ffmpeg:x64-windows
-          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
-          echo "FFMPEG_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows" >> $env:GITHUB_ENV
+          $FFMPEG_VERSION = "7.1"
+          $FFMPEG_ARCHIVE = "ffmpeg-${FFMPEG_VERSION}-full_build-shared.7z"
+          $FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/packages/${FFMPEG_ARCHIVE}"
+          Invoke-WebRequest -Uri $FFMPEG_URL -OutFile $FFMPEG_ARCHIVE
+          7z x $FFMPEG_ARCHIVE -o"$env:RUNNER_TEMP"
+          $FFMPEG_DIR = "$env:RUNNER_TEMP\ffmpeg-${FFMPEG_VERSION}-full_build-shared"
+          echo "FFMPEG_DIR=$FFMPEG_DIR" >> $env:GITHUB_ENV
+          echo "$FFMPEG_DIR\bin" >> $env:GITHUB_PATH
 
       - name: Build
         run: cargo build --target ${{ matrix.target }}
