@@ -234,7 +234,11 @@ fn enumerate_devices_macos() -> Vec<CaptureDevice> {
 
     let mut devices = Vec::new();
 
-    let av_devices = unsafe { AVCaptureDevice::devicesWithMediaType(AVMediaTypeVideo) };
+    let media_type = unsafe { AVMediaTypeVideo };
+    let Some(media_type) = media_type else {
+        return devices;
+    };
+    let av_devices = unsafe { AVCaptureDevice::devicesWithMediaType(media_type) };
 
     for av_device in av_devices.iter() {
         let name = unsafe { av_device.localizedName() }.to_string();
@@ -308,8 +312,15 @@ fn enumerate_devices_windows() -> Vec<CaptureDevice> {
             for device_opt in device_slice {
                 let Some(device) = device_opt else { continue };
 
-                if let Ok((name_pwstr, _len)) =
-                    device.GetAllocatedString(&MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME)
+                let mut name_pwstr = windows::core::PWSTR::null();
+                let mut name_len: u32 = 0;
+                if device
+                    .GetAllocatedString(
+                        &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME,
+                        &mut name_pwstr,
+                        &mut name_len,
+                    )
+                    .is_ok()
                 {
                     let name = name_pwstr.to_string().unwrap_or_default();
                     windows::Win32::System::Com::CoTaskMemFree(Some(

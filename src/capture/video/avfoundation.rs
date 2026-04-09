@@ -159,10 +159,7 @@ impl AvFoundationSource {
         let (frame_tx, frame_rx) = bounded(2);
         let delegate = FrameDelegate::new(frame_tx);
 
-        let queue = dispatch2::Queue::new(
-            "com.shadowcast-player.video-capture",
-            dispatch2::QueueAttribute::Serial,
-        );
+        let queue = dispatch2::DispatchQueue::new("com.shadowcast-player.video-capture", None);
         unsafe {
             output.setSampleBufferDelegate_queue(
                 Some(ProtocolObject::from_ref(&*delegate)),
@@ -293,7 +290,7 @@ impl VideoSource for AvFoundationSource {
             let duration = objc2_core_media::CMTime {
                 value: 1,
                 timescale: format.fps as i32,
-                flags: 1, // kCMTimeFlags_Valid
+                flags: objc2_core_media::CMTimeFlags::Valid,
                 epoch: 0,
             };
             self.device.setActiveVideoMinFrameDuration(duration);

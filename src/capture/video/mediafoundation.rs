@@ -116,15 +116,21 @@ fn find_device(name: &str) -> Result<IMFMediaSource> {
             let Some(device) = device_opt else { continue };
 
             // Get the friendly name
-            let friendly_name = device.GetAllocatedString(&MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME);
-
-            if let Ok((name_pwstr, _len)) = friendly_name {
+            let mut name_pwstr = windows::core::PWSTR::null();
+            let mut name_len: u32 = 0;
+            if device
+                .GetAllocatedString(
+                    &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME,
+                    &mut name_pwstr,
+                    &mut name_len,
+                )
+                .is_ok()
+            {
                 let device_name = name_pwstr.to_string().unwrap_or_default();
                 log::debug!("Found video device: '{}'", device_name);
 
                 if device_name.to_lowercase().contains(&search) {
                     matched_device = Some(device.clone());
-                    // Free the string
                     windows::Win32::System::Com::CoTaskMemFree(Some(
                         name_pwstr.as_ptr() as *const _
                     ));
@@ -317,13 +323,15 @@ impl VideoSource for MediaFoundationSource {
             let mut flags: u32 = 0;
             let mut _timestamp: i64 = 0;
             let mut _actual_index: u32 = 0;
+            let mut sample = None;
 
-            let sample = self.reader.ReadSample(
+            self.reader.ReadSample(
                 MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32,
                 0,
                 Some(&mut _actual_index),
                 Some(&mut flags),
                 Some(&mut _timestamp),
+                Some(&mut sample),
             )?;
 
             let sample = sample.context("ReadSample returned no sample")?;
