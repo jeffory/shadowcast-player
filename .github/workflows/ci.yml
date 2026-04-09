@@ -65,12 +65,11 @@ jobs:
       - name: Install Windows dependencies
         if: runner.os == 'Windows'
         run: |
-          $FFMPEG_VERSION = "7.1"
-          $FFMPEG_ARCHIVE = "ffmpeg-${FFMPEG_VERSION}-full_build-shared.7z"
-          $FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/packages/${FFMPEG_ARCHIVE}"
+          $FFMPEG_ARCHIVE = "ffmpeg-release-full-shared.7z"
+          $FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/$FFMPEG_ARCHIVE"
           Invoke-WebRequest -Uri $FFMPEG_URL -OutFile $FFMPEG_ARCHIVE
           7z x $FFMPEG_ARCHIVE -o"$env:RUNNER_TEMP"
-          $FFMPEG_DIR = "$env:RUNNER_TEMP\ffmpeg-${FFMPEG_VERSION}-full_build-shared"
+          $FFMPEG_DIR = Get-ChildItem "$env:RUNNER_TEMP\ffmpeg-*-full_build-shared" -Directory | Select-Object -First 1
           echo "FFMPEG_DIR=$FFMPEG_DIR" >> $env:GITHUB_ENV
           echo "$FFMPEG_DIR\bin" >> $env:GITHUB_PATH
 

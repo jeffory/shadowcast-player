@@ -4,20 +4,19 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2::{define_class, msg_send, AllocAnyThread, MainThreadOnly};
+use objc2::runtime::{AnyObject, ProtocolObject};
+use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass, MainThreadOnly};
 use objc2_av_foundation::{
-    AVCaptureConnection, AVCaptureDevice, AVCaptureDeviceInput, AVCaptureOutput,
-    AVCaptureSession, AVCaptureVideoDataOutput,
-    AVCaptureVideoDataOutputSampleBufferDelegate, AVMediaTypeVideo,
+    AVCaptureConnection, AVCaptureDevice, AVCaptureDeviceInput, AVCaptureOutput, AVCaptureSession,
+    AVCaptureVideoDataOutput, AVCaptureVideoDataOutputSampleBufferDelegate, AVMediaTypeVideo,
 };
 use objc2_core_media::CMSampleBuffer;
 use objc2_core_video::{
-    CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight,
-    CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferUnlockBaseAddress,
-    kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_32BGRA,
+    kCVPixelFormatType_32BGRA, CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow,
+    CVPixelBufferGetHeight, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress,
+    CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
 };
-use objc2_foundation::{NSNumber, NSObject, NSObjectProtocol, NSString};
+use objc2_foundation::{NSDictionary, NSNumber, NSObject, NSObjectProtocol, NSString};
 
 use crate::capture::format::{CaptureFormat, Frame, PixelFormat};
 
@@ -71,7 +70,7 @@ define_class!(
 
             // Lock the pixel buffer base address for reading
             unsafe {
-                CVPixelBufferLockBaseAddress(&image_buffer, 0);
+                CVPixelBufferLockBaseAddress(&image_buffer, CVPixelBufferLockFlags(0));
             }
 
             let width = unsafe { CVPixelBufferGetWidth(&image_buffer) } as u32;
@@ -94,7 +93,7 @@ define_class!(
                         let offset = y * bytes_per_row + x * 4;
                         rgb.push(src[offset + 2]); // R (from BGRA)
                         rgb.push(src[offset + 1]); // G
-                        rgb.push(src[offset]);     // B
+                        rgb.push(src[offset]); // B
                     }
                 }
 
@@ -107,7 +106,7 @@ define_class!(
             }
 
             unsafe {
-                CVPixelBufferUnlockBaseAddress(&image_buffer, 0);
+                CVPixelBufferUnlockBaseAddress(&image_buffer, CVPixelBufferLockFlags(0));
             }
         }
     }
@@ -126,8 +125,10 @@ impl AvFoundationSource {
     /// On macOS, `device_path` is the AVCaptureDevice unique ID string
     /// or a substring to match against the device's localized name.
     pub fn new(device_path: &str) -> Result<Self> {
-        let device = find_device(device_path)
-            .context(format!("No video capture device found matching '{}'", device_path))?;
+        let device = find_device(device_path).context(format!(
+            "No video capture device found matching '{}'",
+            device_path
+        ))?;
 
         let session = unsafe { AVCaptureSession::new() };
 
@@ -145,15 +146,12 @@ impl AvFoundationSource {
         // Create video data output configured for BGRA pixel format
         let output = unsafe { AVCaptureVideoDataOutput::new() };
 
-        // Set pixel format to BGRA for efficient conversion
-        let format_key: &NSString = unsafe { &*kCVPixelBufferPixelFormatTypeKey };
+        // Set pixel format to BGRA for efficient conversion.
+        // The key is kCVPixelBufferPixelFormatTypeKey ("PixelFormatType").
+        let format_key = NSString::from_str("PixelFormatType");
         let format_value = NSNumber::new_u32(kCVPixelFormatType_32BGRA);
-        let settings = unsafe {
-            objc2_foundation::NSDictionary::from_id_slice(
-                &[format_key],
-                &[&*format_value],
-            )
-        };
+        let settings: Retained<NSDictionary<NSString, AnyObject>> =
+            NSDictionary::from_slices(&[&*format_key], &[format_value.as_ref()]);
         unsafe { output.setVideoSettings(Some(&settings)) };
         unsafe { output.setAlwaysDiscardsLateVideoFrames(true) };
 
@@ -161,7 +159,10 @@ impl AvFoundationSource {
         let (frame_tx, frame_rx) = bounded(2);
         let delegate = FrameDelegate::new(frame_tx);
 
-        let queue = dispatch2::Queue::new("com.shadowcast-player.video-capture", dispatch2::QueueAttribute::Serial);
+        let queue = dispatch2::Queue::new(
+            "com.shadowcast-player.video-capture",
+            dispatch2::QueueAttribute::Serial,
+        );
         unsafe {
             output.setSampleBufferDelegate_queue(
                 Some(ProtocolObject::from_ref(&*delegate)),
@@ -195,9 +196,8 @@ fn find_device(name_or_id: &str) -> Option<Retained<AVCaptureDevice>> {
 
     // Fall back to name substring match
     let search = name_or_id.to_lowercase();
-    let devices = unsafe {
-        AVCaptureDevice::devicesWithMediaType(AVMediaTypeVideo)
-    };
+    let media_type = unsafe { AVMediaTypeVideo }?;
+    let devices = unsafe { AVCaptureDevice::devicesWithMediaType(media_type) };
 
     for device in devices.iter() {
         let name = unsafe { device.localizedName() }.to_string();
@@ -216,9 +216,8 @@ impl VideoSource for AvFoundationSource {
         let device_formats = unsafe { self.device.formats() };
         for fmt in device_formats.iter() {
             let desc = unsafe { fmt.formatDescription() };
-            let dimensions = unsafe {
-                objc2_core_media::CMVideoFormatDescriptionGetDimensions(&desc)
-            };
+            let dimensions =
+                unsafe { objc2_core_media::CMVideoFormatDescriptionGetDimensions(&desc) };
 
             let width = dimensions.width as u32;
             let height = dimensions.height as u32;
@@ -258,9 +257,8 @@ impl VideoSource for AvFoundationSource {
         let device_formats = unsafe { self.device.formats() };
         let target_format = device_formats.iter().find(|fmt| {
             let desc = unsafe { fmt.formatDescription() };
-            let dimensions = unsafe {
-                objc2_core_media::CMVideoFormatDescriptionGetDimensions(&desc)
-            };
+            let dimensions =
+                unsafe { objc2_core_media::CMVideoFormatDescriptionGetDimensions(&desc) };
             let width = dimensions.width as u32;
             let height = dimensions.height as u32;
 
@@ -278,7 +276,9 @@ impl VideoSource for AvFoundationSource {
         let Some(avformat) = target_format else {
             anyhow::bail!(
                 "No matching format found for {}x{} @ {}fps",
-                format.width, format.height, format.fps
+                format.width,
+                format.height,
+                format.fps
             );
         };
 
