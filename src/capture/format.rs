@@ -39,6 +39,36 @@ impl fmt::Display for CaptureFormat {
     }
 }
 
+/// Convert YUYV (4:2:2) buffer to RGB24.
+/// Uses BT.601 studio-range conversion.
+pub fn yuyv_to_rgb(yuyv: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let pixel_count = (width * height) as usize;
+    let mut rgb = Vec::with_capacity(pixel_count * 3);
+
+    for chunk in yuyv.chunks_exact(4) {
+        let y0 = chunk[0] as f32;
+        let u = chunk[1] as f32;
+        let y1 = chunk[2] as f32;
+        let v = chunk[3] as f32;
+
+        for y in [y0, y1] {
+            let c = y - 16.0;
+            let d = u - 128.0;
+            let e = v - 128.0;
+
+            let r = (1.164 * c + 1.596 * e).clamp(0.0, 255.0) as u8;
+            let g = (1.164 * c - 0.392 * d - 0.813 * e).clamp(0.0, 255.0) as u8;
+            let b = (1.164 * c + 2.017 * d).clamp(0.0, 255.0) as u8;
+
+            rgb.push(r);
+            rgb.push(g);
+            rgb.push(b);
+        }
+    }
+
+    rgb
+}
+
 pub struct Frame {
     pub width: u32,
     pub height: u32,
