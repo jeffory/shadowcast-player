@@ -1,5 +1,6 @@
 use std::fmt;
 use std::time::Instant;
+use zune_jpeg::JpegDecoder;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelFormat {
@@ -74,4 +75,26 @@ pub struct Frame {
     pub height: u32,
     pub data: Vec<u8>,
     pub timestamp: Instant,
+}
+
+/// Decode an MJPEG frame (JPEG buffer) to RGB24.
+/// Returns (rgb_data, width, height).
+pub fn mjpeg_to_rgb(jpeg_data: &[u8]) -> anyhow::Result<(Vec<u8>, u32, u32)> {
+    let cursor = std::io::Cursor::new(jpeg_data);
+    let mut decoder = JpegDecoder::new(cursor);
+    decoder
+        .decode_headers()
+        .map_err(|e| anyhow::anyhow!("JPEG header error: {:?}", e))?;
+
+    let info = decoder
+        .info()
+        .ok_or_else(|| anyhow::anyhow!("No dimensions in JPEG"))?;
+    let width = info.width as u32;
+    let height = info.height as u32;
+
+    let pixels = decoder
+        .decode()
+        .map_err(|e| anyhow::anyhow!("JPEG decode error: {:?}", e))?;
+
+    Ok((pixels, width, height))
 }

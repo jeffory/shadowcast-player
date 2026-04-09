@@ -1,4 +1,4 @@
-use genki_arcade::capture::format::{yuyv_to_rgb, CaptureFormat, PixelFormat};
+use genki_arcade::capture::format::{mjpeg_to_rgb, yuyv_to_rgb, CaptureFormat, PixelFormat};
 
 #[test]
 fn test_capture_format_display_1080p60() {
@@ -62,4 +62,33 @@ fn test_yuyv_to_rgb_output_size() {
     let yuyv = vec![128u8; 16];
     let rgb = yuyv_to_rgb(&yuyv, 4, 2);
     assert_eq!(rgb.len(), 24);
+}
+
+#[test]
+fn test_mjpeg_to_rgb_valid_jpeg() {
+    use image::{RgbImage, Rgb};
+    use std::io::Cursor;
+
+    let mut img = RgbImage::new(4, 4);
+    for pixel in img.pixels_mut() {
+        *pixel = Rgb([255, 0, 0]); // red
+    }
+    let mut jpeg_buf = Vec::new();
+    let mut cursor = Cursor::new(&mut jpeg_buf);
+    img.write_to(&mut cursor, image::ImageFormat::Jpeg).unwrap();
+
+    let result = mjpeg_to_rgb(&jpeg_buf);
+    assert!(result.is_ok());
+    let (rgb, width, height) = result.unwrap();
+    assert_eq!(width, 4);
+    assert_eq!(height, 4);
+    assert_eq!(rgb.len(), 4 * 4 * 3);
+    assert!(rgb[0] > 200); // R channel should be close to 255
+}
+
+#[test]
+fn test_mjpeg_to_rgb_invalid_data() {
+    let garbage = vec![0u8; 100];
+    let result = mjpeg_to_rgb(&garbage);
+    assert!(result.is_err());
 }
