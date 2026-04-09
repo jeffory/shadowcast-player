@@ -1,4 +1,5 @@
 use crate::capture::format::CaptureFormat;
+use crate::render::display::ScaleMode;
 use std::time::{Duration, Instant};
 
 pub struct Toolbar {
@@ -14,6 +15,8 @@ pub struct Toolbar {
     pub screenshot_requested: bool,
     pub recording_toggled: bool,
     pub format_changed: bool,
+    pub scale_mode: ScaleMode,
+    pub scale_mode_changed: bool,
 }
 
 impl Toolbar {
@@ -29,6 +32,8 @@ impl Toolbar {
             screenshot_requested: false,
             recording_toggled: false,
             format_changed: false,
+            scale_mode: ScaleMode::Fit,
+            scale_mode_changed: false,
         }
     }
 
@@ -116,6 +121,26 @@ impl Toolbar {
                                     });
                                 if self.selected_format_index != old_index {
                                     self.format_changed = true;
+                                    self.last_mouse_over = Some(Instant::now());
+                                }
+
+                                ui.separator();
+
+                                // Scale mode
+                                let old_mode = self.scale_mode;
+                                egui::ComboBox::from_id_salt("scale_mode")
+                                    .selected_text(self.scale_mode.label())
+                                    .show_ui(ui, |ui| {
+                                        for mode in ScaleMode::ALL {
+                                            ui.selectable_value(
+                                                &mut self.scale_mode,
+                                                mode,
+                                                mode.label(),
+                                            );
+                                        }
+                                    });
+                                if self.scale_mode != old_mode {
+                                    self.scale_mode_changed = true;
                                     self.last_mouse_over = Some(Instant::now());
                                 }
 

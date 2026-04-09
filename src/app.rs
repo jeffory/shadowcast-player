@@ -375,6 +375,19 @@ impl ApplicationHandler for App {
                     }
                 }
 
+                if self.toolbar.scale_mode_changed {
+                    self.toolbar.scale_mode_changed = false;
+                }
+
+                // Update scale mode every frame (cheap buffer write)
+                if let Some(renderer) = &self.renderer {
+                    renderer.set_scale_mode(
+                        self.toolbar.scale_mode,
+                        self.last_frame_width,
+                        self.last_frame_height,
+                    );
+                }
+
                 // Hide cursor when toolbar is hidden (VLC-style)
                 if !self.toolbar.visible {
                     if let Some(window) = &self.window {

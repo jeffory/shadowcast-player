@@ -3,6 +3,39 @@ use std::sync::Arc;
 use anyhow::Result;
 use winit::window::Window;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScaleMode {
+    Fit,
+    Fill,
+    Stretch,
+    NoScale,
+}
+
+impl ScaleMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            ScaleMode::Fit => "Fit",
+            ScaleMode::Fill => "Fill",
+            ScaleMode::Stretch => "Stretch",
+            ScaleMode::NoScale => "100%",
+        }
+    }
+
+    pub const ALL: [ScaleMode; 4] = [
+        ScaleMode::Fit,
+        ScaleMode::Fill,
+        ScaleMode::Stretch,
+        ScaleMode::NoScale,
+    ];
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct QuadUniforms {
+    scale: [f32; 2],
+    offset: [f32; 2],
+}
+
 pub struct DisplayRenderer {
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
@@ -16,6 +49,9 @@ pub struct DisplayRenderer {
     pub bind_group: Option<wgpu::BindGroup>,
     pub texture_width: u32,
     pub texture_height: u32,
+    pub uniform_buffer: wgpu::Buffer,
+    pub uniform_bind_group: wgpu::BindGroup,
+    _uniform_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl DisplayRenderer {
@@ -96,9 +132,50 @@ impl DisplayRenderer {
             ],
         });
 
+        let uniform_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("uniform bind group layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("quad uniform buffer"),
+            size: std::mem::size_of::<QuadUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("uniform bind group"),
+            layout: &uniform_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
+
+        // Initialize with identity (stretch) uniforms
+        queue.write_buffer(
+            &uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[QuadUniforms {
+                scale: [1.0, 1.0],
+                offset: [0.0, 0.0],
+            }]),
+        );
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("video pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout],
+            bind_group_layouts: &[&bind_group_layout, &uniform_bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -160,6 +237,9 @@ impl DisplayRenderer {
             bind_group: None,
             texture_width: 0,
             texture_height: 0,
+            uniform_buffer,
+            uniform_bind_group,
+            _uniform_bind_group_layout: uniform_bind_group_layout,
         })
     }
 
@@ -241,6 +321,53 @@ impl DisplayRenderer {
         self.texture_height = height;
     }
 
+    pub fn set_scale_mode(&self, mode: ScaleMode, video_w: u32, video_h: u32) {
+        let surface_w = self.surface_config.width as f32;
+        let surface_h = self.surface_config.height as f32;
+        let video_w = video_w as f32;
+        let video_h = video_h as f32;
+
+        let uniforms = match mode {
+            ScaleMode::Stretch => QuadUniforms {
+                scale: [1.0, 1.0],
+                offset: [0.0, 0.0],
+            },
+            ScaleMode::Fit => {
+                let scale_x = surface_w / video_w;
+                let scale_y = surface_h / video_h;
+                let scale = scale_x.min(scale_y);
+                let w = (video_w * scale) / surface_w;
+                let h = (video_h * scale) / surface_h;
+                QuadUniforms {
+                    scale: [w, h],
+                    offset: [0.0, 0.0],
+                }
+            }
+            ScaleMode::Fill => {
+                let scale_x = surface_w / video_w;
+                let scale_y = surface_h / video_h;
+                let scale = scale_x.max(scale_y);
+                let w = (video_w * scale) / surface_w;
+                let h = (video_h * scale) / surface_h;
+                QuadUniforms {
+                    scale: [w, h],
+                    offset: [0.0, 0.0],
+                }
+            }
+            ScaleMode::NoScale => {
+                let w = video_w / surface_w;
+                let h = video_h / surface_h;
+                QuadUniforms {
+                    scale: [w, h],
+                    offset: [0.0, 0.0],
+                }
+            }
+        };
+
+        self.queue
+            .write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+    }
+
     pub fn render_frame(&self) -> Result<(wgpu::SurfaceTexture, wgpu::CommandEncoder)> {
         let output = self.surface.get_current_texture()?;
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -268,6 +395,7 @@ impl DisplayRenderer {
             if self.bind_group.is_some() {
                 render_pass.set_pipeline(&self.render_pipeline);
                 render_pass.set_bind_group(0, self.bind_group.as_ref().unwrap(), &[]);
+                render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
                 render_pass.draw(0..6, 0..1);
             }
         }

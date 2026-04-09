@@ -1,3 +1,10 @@
+struct QuadUniforms {
+    scale: vec2<f32>,
+    offset: vec2<f32>,
+};
+
+@group(1) @binding(0) var<uniform> uniforms: QuadUniforms;
+
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) tex_coords: vec2<f32>,
@@ -25,7 +32,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     );
 
     var output: VertexOutput;
-    output.position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
+    output.position = vec4<f32>(positions[vertex_index] * uniforms.scale + uniforms.offset, 0.0, 1.0);
     output.tex_coords = tex_coords[vertex_index];
     return output;
 }
