@@ -32,9 +32,8 @@ fn save_png(rgb_data: &[u8], width: u32, height: u32) -> Result<()> {
             .with_context(|| format!("Failed to create directory: {:?}", parent))?;
     }
 
-    let img: ImageBuffer<Rgb<u8>, _> =
-        ImageBuffer::from_raw(width, height, rgb_data.to_vec())
-            .context("Failed to create image buffer from RGB data")?;
+    let img: ImageBuffer<Rgb<u8>, _> = ImageBuffer::from_raw(width, height, rgb_data.to_vec())
+        .context("Failed to create image buffer from RGB data")?;
 
     img.save(&path)
         .with_context(|| format!("Failed to save screenshot to {:?}", path))?;

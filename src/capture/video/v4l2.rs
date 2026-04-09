@@ -2,14 +2,14 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use v4l::buffer::Type as BufType;
-use v4l::format::{FourCC, Format as V4lFormat};
+use v4l::format::{Format as V4lFormat, FourCC};
 use v4l::frameinterval::FrameIntervalEnum;
 use v4l::io::mmap::Stream;
 use v4l::io::traits::CaptureStream;
 use v4l::video::Capture;
 use v4l::Device;
 
-use crate::capture::format::{CaptureFormat, Frame, PixelFormat, mjpeg_to_rgb, yuyv_to_rgb};
+use crate::capture::format::{mjpeg_to_rgb, yuyv_to_rgb, CaptureFormat, Frame, PixelFormat};
 
 use super::VideoSource;
 
@@ -23,8 +23,7 @@ pub struct V4l2Source {
 impl V4l2Source {
     /// Opens a V4L2 device at the given path (e.g. "/dev/video2").
     pub fn new(device_path: &str) -> Result<Self> {
-        let device =
-            Device::with_path(device_path).context("Failed to open V4L2 device")?;
+        let device = Device::with_path(device_path).context("Failed to open V4L2 device")?;
         Ok(Self {
             device,
             stream: None,
@@ -118,8 +117,7 @@ impl VideoSource for V4l2Source {
         Capture::set_format(&self.device, &v4l_fmt).context("Failed to set V4L2 format")?;
 
         // Set the frame interval (1/fps) to control capture rate
-        let params =
-            v4l::video::capture::Parameters::with_fps(format.fps);
+        let params = v4l::video::capture::Parameters::with_fps(format.fps);
         Capture::set_params(&self.device, &params).context("Failed to set V4L2 frame interval")?;
 
         self.current_format = Some(format.clone());
@@ -161,8 +159,8 @@ impl VideoSource for V4l2Source {
             .as_mut()
             .context("Stream not started; call start() before capturing")?;
 
-        let (buf, _meta) = CaptureStream::next(stream)
-            .context("Failed to capture frame from V4L2 stream")?;
+        let (buf, _meta) =
+            CaptureStream::next(stream).context("Failed to capture frame from V4L2 stream")?;
 
         let (data, width, height) = match current_format.pixel_format {
             PixelFormat::Mjpeg => mjpeg_to_rgb(buf)?,

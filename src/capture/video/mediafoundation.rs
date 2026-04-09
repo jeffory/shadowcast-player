@@ -1,19 +1,17 @@
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use windows::core::GUID;
 use windows::Win32::Foundation::FALSE;
 use windows::Win32::Media::MediaFoundation::{
-    IMFActivate, IMFAttributes, IMFMediaSource, IMFMediaType, IMFSourceReader,
-    MFCreateAttributes, MFCreateSourceReaderFromMediaSource, MFEnumDeviceSources,
-    MFMediaType_Video, MFStartup, MFShutdown, MFSTARTUP_NOSOCKET,
-    MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
-    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
-    MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_READWRITE_DISABLE_CONVERTERS,
-    MF_SOURCE_READER_FIRST_VIDEO_STREAM,
-    MF_API_VERSION,
+    IMFActivate, IMFAttributes, IMFMediaSource, IMFMediaType, IMFSourceReader, MFCreateAttributes,
+    MFCreateSourceReaderFromMediaSource, MFEnumDeviceSources, MFMediaType_Video, MFShutdown,
+    MFStartup, MFSTARTUP_NOSOCKET, MF_API_VERSION, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME,
+    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
+    MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE,
+    MF_READWRITE_DISABLE_CONVERTERS, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
 };
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
-use windows::core::GUID;
 
 use crate::capture::format::{CaptureFormat, Frame, PixelFormat};
 
@@ -118,8 +116,7 @@ fn find_device(name: &str) -> Result<IMFMediaSource> {
             let Some(device) = device_opt else { continue };
 
             // Get the friendly name
-            let friendly_name = device
-                .GetAllocatedString(&MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME);
+            let friendly_name = device.GetAllocatedString(&MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME);
 
             if let Ok((name_pwstr, _len)) = friendly_name {
                 let device_name = name_pwstr.to_string().unwrap_or_default();
@@ -129,22 +126,20 @@ fn find_device(name: &str) -> Result<IMFMediaSource> {
                     matched_device = Some(device.clone());
                     // Free the string
                     windows::Win32::System::Com::CoTaskMemFree(Some(
-                        name_pwstr.as_ptr() as *const _,
+                        name_pwstr.as_ptr() as *const _
                     ));
                     break;
                 }
 
-                windows::Win32::System::Com::CoTaskMemFree(Some(
-                    name_pwstr.as_ptr() as *const _,
-                ));
+                windows::Win32::System::Com::CoTaskMemFree(Some(name_pwstr.as_ptr() as *const _));
             }
         }
 
         // Free the device array
         windows::Win32::System::Com::CoTaskMemFree(Some(devices_ptr as *const _));
 
-        let device = matched_device
-            .context(format!("No video device found matching '{}'", name))?;
+        let device =
+            matched_device.context(format!("No video device found matching '{}'", name))?;
 
         // Activate the device to get the media source
         let source: IMFMediaSource = device.ActivateObject()?;
@@ -188,10 +183,9 @@ impl VideoSource for MediaFoundationSource {
         unsafe {
             let mut index: u32 = 0;
             loop {
-                let media_type: Result<IMFMediaType, _> = self.reader.GetNativeMediaType(
-                    MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32,
-                    index,
-                );
+                let media_type: Result<IMFMediaType, _> = self
+                    .reader
+                    .GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32, index);
 
                 let Ok(media_type) = media_type else { break };
 
@@ -257,15 +251,16 @@ impl VideoSource for MediaFoundationSource {
             // Find the matching native media type
             let mut index: u32 = 0;
             loop {
-                let media_type: Result<IMFMediaType, _> = self.reader.GetNativeMediaType(
-                    MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32,
-                    index,
-                );
+                let media_type: Result<IMFMediaType, _> = self
+                    .reader
+                    .GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32, index);
 
                 let Ok(media_type) = media_type else {
                     anyhow::bail!(
                         "No matching format found for {}x{} @ {}fps",
-                        format.width, format.height, format.fps
+                        format.width,
+                        format.height,
+                        format.fps
                     );
                 };
 
@@ -339,16 +334,13 @@ impl VideoSource for MediaFoundationSource {
             let mut cur_len: u32 = 0;
             buffer.Lock(&mut buf_ptr, Some(&mut _max_len), Some(&mut cur_len))?;
 
-            let raw_data =
-                std::slice::from_raw_parts(buf_ptr, cur_len as usize).to_vec();
+            let raw_data = std::slice::from_raw_parts(buf_ptr, cur_len as usize).to_vec();
 
             buffer.Unlock()?;
 
             // Decode based on pixel format
             let (data, width, height) = match current_format.pixel_format {
-                PixelFormat::Mjpeg => {
-                    crate::capture::format::mjpeg_to_rgb(&raw_data)?
-                }
+                PixelFormat::Mjpeg => crate::capture::format::mjpeg_to_rgb(&raw_data)?,
                 PixelFormat::Yuyv => {
                     let w = current_format.width;
                     let h = current_format.height;

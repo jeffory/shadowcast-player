@@ -265,10 +265,9 @@ fn find_shadowcast_windows() -> Option<CaptureDevice> {
 #[cfg(target_os = "windows")]
 fn enumerate_devices_windows() -> Vec<CaptureDevice> {
     use windows::Win32::Media::MediaFoundation::{
-        MFCreateAttributes, MFEnumDeviceSources, MFStartup, MFShutdown,
-        MF_API_VERSION, MFSTARTUP_NOSOCKET,
-        MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
-        MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID, IMFActivate,
+        IMFActivate, MFCreateAttributes, MFEnumDeviceSources, MFShutdown, MFStartup,
+        MFSTARTUP_NOSOCKET, MF_API_VERSION, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME,
+        MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
     };
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
@@ -314,7 +313,7 @@ fn enumerate_devices_windows() -> Vec<CaptureDevice> {
                 {
                     let name = name_pwstr.to_string().unwrap_or_default();
                     windows::Win32::System::Com::CoTaskMemFree(Some(
-                        name_pwstr.as_ptr() as *const _,
+                        name_pwstr.as_ptr() as *const _
                     ));
 
                     // On Windows, WASAPI device names typically match the product name

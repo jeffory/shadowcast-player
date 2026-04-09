@@ -2,25 +2,45 @@ use shadowcast_player::capture::format::{mjpeg_to_rgb, yuyv_to_rgb, CaptureForma
 
 #[test]
 fn test_capture_format_display_1080p60() {
-    let fmt = CaptureFormat { width: 1920, height: 1080, fps: 60, pixel_format: PixelFormat::Mjpeg };
+    let fmt = CaptureFormat {
+        width: 1920,
+        height: 1080,
+        fps: 60,
+        pixel_format: PixelFormat::Mjpeg,
+    };
     assert_eq!(fmt.to_string(), "1080p60");
 }
 
 #[test]
 fn test_capture_format_display_1440p30() {
-    let fmt = CaptureFormat { width: 2560, height: 1440, fps: 30, pixel_format: PixelFormat::Yuyv };
+    let fmt = CaptureFormat {
+        width: 2560,
+        height: 1440,
+        fps: 30,
+        pixel_format: PixelFormat::Yuyv,
+    };
     assert_eq!(fmt.to_string(), "1440p30");
 }
 
 #[test]
 fn test_capture_format_display_720p60() {
-    let fmt = CaptureFormat { width: 1280, height: 720, fps: 60, pixel_format: PixelFormat::Mjpeg };
+    let fmt = CaptureFormat {
+        width: 1280,
+        height: 720,
+        fps: 60,
+        pixel_format: PixelFormat::Mjpeg,
+    };
     assert_eq!(fmt.to_string(), "720p60");
 }
 
 #[test]
 fn test_capture_format_display_non_standard() {
-    let fmt = CaptureFormat { width: 1360, height: 768, fps: 60, pixel_format: PixelFormat::Mjpeg };
+    let fmt = CaptureFormat {
+        width: 1360,
+        height: 768,
+        fps: 60,
+        pixel_format: PixelFormat::Mjpeg,
+    };
     assert_eq!(fmt.to_string(), "1360x768@60");
 }
 
@@ -30,7 +50,7 @@ fn test_yuyv_to_rgb_single_macropixel() {
     let yuyv = vec![128, 128, 128, 128];
     let rgb = yuyv_to_rgb(&yuyv, 2, 1);
     assert_eq!(rgb.len(), 6); // 2 pixels * 3 bytes
-    // Neutral gray: Y=128, U=128, V=128 -> R≈128, G≈128, B≈128
+                              // Neutral gray: Y=128, U=128, V=128 -> R≈128, G≈128, B≈128
     assert!((rgb[0] as i32 - 128).abs() < 3);
     assert!((rgb[1] as i32 - 128).abs() < 3);
     assert!((rgb[2] as i32 - 128).abs() < 3);
@@ -66,7 +86,7 @@ fn test_yuyv_to_rgb_output_size() {
 
 #[test]
 fn test_mjpeg_to_rgb_valid_jpeg() {
-    use image::{RgbImage, Rgb};
+    use image::{Rgb, RgbImage};
     use std::io::Cursor;
 
     let mut img = RgbImage::new(4, 4);

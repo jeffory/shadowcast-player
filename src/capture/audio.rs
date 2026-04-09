@@ -91,10 +91,7 @@ impl AudioSource for CpalAudioSource {
             .collect();
 
         for d in &input_devices {
-            log::debug!(
-                "Audio input device: '{}'",
-                d.name().unwrap_or_default()
-            );
+            log::debug!("Audio input device: '{}'", d.name().unwrap_or_default());
         }
 
         let match_names: Vec<String> = self.device_names.iter().map(|s| s.to_lowercase()).collect();
@@ -127,9 +124,7 @@ impl AudioSource for CpalAudioSource {
                 4
             }
         });
-        matched.dedup_by(|a, b| {
-            a.name().unwrap_or_default() == b.name().unwrap_or_default()
-        });
+        matched.dedup_by(|a, b| a.name().unwrap_or_default() == b.name().unwrap_or_default());
 
         let input_device = matched.first().context(format!(
             "No input device found matching any of: {:?}",
@@ -183,7 +178,9 @@ impl AudioSource for CpalAudioSource {
             )
             .context("Failed to build audio input stream")?;
 
-        input_stream.play().context("Failed to start audio input stream")?;
+        input_stream
+            .play()
+            .context("Failed to start audio input stream")?;
 
         // Output stream: read from ring buffer for live monitoring
         let output_device = host
@@ -210,7 +207,9 @@ impl AudioSource for CpalAudioSource {
             )
             .context("Failed to build audio output stream")?;
 
-        output_stream.play().context("Failed to start audio output stream")?;
+        output_stream
+            .play()
+            .context("Failed to start audio output stream")?;
 
         self.input_stream = Some(input_stream);
         self.output_stream = Some(output_stream);
