@@ -21,10 +21,6 @@ use super::VideoSource;
 const MF_VIDEO_FORMAT_MJPG: GUID = GUID::from_u128(0x47504a4d_0000_0010_8000_00aa00389b71);
 /// MFVideoFormat_YUY2 GUID
 const MF_VIDEO_FORMAT_YUY2: GUID = GUID::from_u128(0x32595559_0000_0010_8000_00aa00389b71);
-/// MFVideoFormat_NV12 GUID
-const MF_VIDEO_FORMAT_NV12: GUID = GUID::from_u128(0x3231564e_0000_0010_8000_00aa00389b71);
-/// MFVideoFormat_RGB24 GUID
-const MF_VIDEO_FORMAT_RGB24: GUID = GUID::from_u128(0x00000014_0000_0010_8000_00aa00389b71);
 
 /// Media Foundation capture backend for Windows.
 pub struct MediaFoundationSource {
@@ -157,7 +153,7 @@ fn find_device(name: &str) -> Result<IMFMediaSource> {
 fn unpack_frame_size(packed: u64) -> (u32, u32) {
     let width = (packed >> 32) as u32;
     let height = packed as u32;
-    Ok::<_, ()>((width, height)).unwrap()
+    (width, height)
 }
 
 /// Extract fps from a packed MF_MT_FRAME_RATE value.

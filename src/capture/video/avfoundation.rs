@@ -1,11 +1,10 @@
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass, MainThreadOnly};
+use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass};
 use objc2_av_foundation::{
     AVCaptureConnection, AVCaptureDevice, AVCaptureDeviceInput, AVCaptureOutput, AVCaptureSession,
     AVCaptureVideoDataOutput, AVCaptureVideoDataOutputSampleBufferDelegate, AVMediaTypeVideo,
@@ -69,23 +68,19 @@ define_class!(
             };
 
             // Lock the pixel buffer base address for reading
-            unsafe {
-                CVPixelBufferLockBaseAddress(&image_buffer, CVPixelBufferLockFlags(0));
-            }
+            CVPixelBufferLockBaseAddress(&image_buffer, CVPixelBufferLockFlags(0));
 
-            let width = unsafe { CVPixelBufferGetWidth(&image_buffer) } as u32;
-            let height = unsafe { CVPixelBufferGetHeight(&image_buffer) } as u32;
-            let bytes_per_row = unsafe { CVPixelBufferGetBytesPerRow(&image_buffer) };
-            let base_address = unsafe { CVPixelBufferGetBaseAddress(&image_buffer) };
+            let width = CVPixelBufferGetWidth(&image_buffer) as u32;
+            let height = CVPixelBufferGetHeight(&image_buffer) as u32;
+            let bytes_per_row = CVPixelBufferGetBytesPerRow(&image_buffer);
+            let base_address = CVPixelBufferGetBaseAddress(&image_buffer);
 
             if !base_address.is_null() && width > 0 && height > 0 {
                 // Convert BGRA to RGB
-                let src = unsafe {
-                    std::slice::from_raw_parts(
-                        base_address as *const u8,
-                        bytes_per_row * height as usize,
-                    )
-                };
+                let src = std::slice::from_raw_parts(
+                    base_address as *const u8,
+                    bytes_per_row * height as usize,
+                );
 
                 let mut rgb = Vec::with_capacity((width * height * 3) as usize);
                 for y in 0..height as usize {
@@ -105,9 +100,7 @@ define_class!(
                 });
             }
 
-            unsafe {
-                CVPixelBufferUnlockBaseAddress(&image_buffer, CVPixelBufferLockFlags(0));
-            }
+            CVPixelBufferUnlockBaseAddress(&image_buffer, CVPixelBufferLockFlags(0));
         }
     }
 );
@@ -194,7 +187,27 @@ fn find_device(name_or_id: &str) -> Option<Retained<AVCaptureDevice>> {
     // Fall back to name substring match
     let search = name_or_id.to_lowercase();
     let media_type = unsafe { AVMediaTypeVideo }?;
-    let devices = unsafe { AVCaptureDevice::devicesWithMediaType(media_type) };
+
+    use objc2_av_foundation::{
+        AVCaptureDeviceDiscoverySession, AVCaptureDevicePosition,
+        AVCaptureDeviceTypeBuiltInWideAngleCamera, AVCaptureDeviceTypeExternal,
+    };
+    use objc2_foundation::NSArray;
+
+    let device_types = unsafe {
+        NSArray::from_slice(&[
+            AVCaptureDeviceTypeBuiltInWideAngleCamera as &objc2_foundation::NSString,
+            AVCaptureDeviceTypeExternal as &objc2_foundation::NSString,
+        ])
+    };
+    let session = unsafe {
+        AVCaptureDeviceDiscoverySession::discoverySessionWithDeviceTypes_mediaType_position(
+            &device_types,
+            Some(media_type),
+            AVCaptureDevicePosition::Unspecified,
+        )
+    };
+    let devices = unsafe { session.devices() };
 
     for device in devices.iter() {
         let name = unsafe { device.localizedName() }.to_string();

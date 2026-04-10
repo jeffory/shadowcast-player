@@ -28,8 +28,8 @@ v4l = "0.14"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSObject", "NSDictionary", "NSString", "NSValue"] }
-objc2-av-foundation = { version = "0.3", features = ["objc2-core-media"] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSObject", "NSDictionary", "NSString", "NSValue"] }
+objc2-av-foundation = { version = "0.3", features = ["AVMediaFormat", "objc2-core-media"] }
 objc2-core-media = { version = "0.3", features = ["objc2-core-video"] }
 objc2-core-video = "0.3"
 dispatch2 = "0.3"

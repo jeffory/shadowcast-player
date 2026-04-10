@@ -1,5 +1,7 @@
 /// Known USB vendor/product IDs for the Genki ShadowCast 2.
+#[cfg(target_os = "linux")]
 const SHADOWCAST_VENDOR_ID: &str = "345f";
+#[cfg(target_os = "linux")]
 const SHADOWCAST_PRODUCT_ID: &str = "2013";
 
 /// Represents a discovered video capture device.
@@ -230,7 +232,11 @@ fn find_shadowcast_macos() -> Option<CaptureDevice> {
 
 #[cfg(target_os = "macos")]
 fn enumerate_devices_macos() -> Vec<CaptureDevice> {
-    use objc2_av_foundation::{AVCaptureDevice, AVMediaTypeVideo};
+    use objc2_av_foundation::{
+        AVCaptureDevice, AVCaptureDeviceDiscoverySession, AVCaptureDevicePosition,
+        AVCaptureDeviceTypeBuiltInWideAngleCamera, AVCaptureDeviceTypeExternal, AVMediaTypeVideo,
+    };
+    use objc2_foundation::NSArray;
 
     let mut devices = Vec::new();
 
@@ -238,7 +244,21 @@ fn enumerate_devices_macos() -> Vec<CaptureDevice> {
     let Some(media_type) = media_type else {
         return devices;
     };
-    let av_devices = unsafe { AVCaptureDevice::devicesWithMediaType(media_type) };
+
+    let device_types = unsafe {
+        NSArray::from_slice(&[
+            AVCaptureDeviceTypeBuiltInWideAngleCamera as &objc2_foundation::NSString,
+            AVCaptureDeviceTypeExternal as &objc2_foundation::NSString,
+        ])
+    };
+    let session = unsafe {
+        AVCaptureDeviceDiscoverySession::discoverySessionWithDeviceTypes_mediaType_position(
+            &device_types,
+            Some(media_type),
+            AVCaptureDevicePosition::Unspecified,
+        )
+    };
+    let av_devices = unsafe { session.devices() };
 
     for av_device in av_devices.iter() {
         let name = unsafe { av_device.localizedName() }.to_string();
