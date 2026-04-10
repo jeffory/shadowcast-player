@@ -46,6 +46,9 @@ impl Drop for ComGuard {
     }
 }
 
+/// RPC_E_CHANGED_MODE — COM already initialized with a different threading model.
+const RPC_E_CHANGED_MODE: i32 = 0x80010106u32 as i32;
+
 fn init_com() -> Result<ComGuard> {
     let owns_com;
     unsafe {
@@ -56,9 +59,9 @@ fn init_com() -> Result<ComGuard> {
         let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
         match hr.0 {
             0 | 1 => owns_com = true, // S_OK or S_FALSE — we initialized it
-            0x80010106 => {
-                // RPC_E_CHANGED_MODE — COM already initialized as STA by another
-                // library. Don't uninitialize on drop since we don't own it.
+            RPC_E_CHANGED_MODE => {
+                // COM already initialized as STA by another library.
+                // Don't uninitialize on drop since we don't own it.
                 owns_com = false;
             }
             _ => {
