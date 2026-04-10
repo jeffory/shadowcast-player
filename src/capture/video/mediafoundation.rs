@@ -30,26 +30,46 @@ pub struct MediaFoundationSource {
 }
 
 /// RAII guard for COM initialization/shutdown.
-struct ComGuard;
+struct ComGuard {
+    /// Whether we successfully called CoInitializeEx (and thus own the uninit).
+    owns_com: bool,
+}
 
 impl Drop for ComGuard {
     fn drop(&mut self) {
         unsafe {
             MFShutdown().ok();
-            CoUninitialize();
+            if self.owns_com {
+                CoUninitialize();
+            }
         }
     }
 }
 
 fn init_com() -> Result<ComGuard> {
+    let owns_com;
     unsafe {
-        CoInitializeEx(None, COINIT_MULTITHREADED)
-            .ok()
-            .context("Failed to initialize COM")?;
+        // CoInitializeEx returns S_OK on first init, S_FALSE if already initialized
+        // with the same mode, or RPC_E_CHANGED_MODE if already initialized with a
+        // different threading model (e.g. winit/wgpu use STA on the main thread).
+        // All three cases are fine — we just need COM available on this thread.
+        let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
+        match hr.0 {
+            0 | 1 => owns_com = true, // S_OK or S_FALSE — we initialized it
+            0x80010106 => {
+                // RPC_E_CHANGED_MODE — COM already initialized as STA by another
+                // library. Don't uninitialize on drop since we don't own it.
+                owns_com = false;
+            }
+            _ => {
+                hr.ok().context("Failed to initialize COM")?;
+                owns_com = false; // unreachable, but satisfies the compiler
+            }
+        }
         MFStartup(MF_API_VERSION, MFSTARTUP_NOSOCKET)
             .context("Failed to initialize Media Foundation")?;
     }
-    Ok(ComGuard)
+    Ok(ComGuard { owns_com })
 }
 
 impl MediaFoundationSource {
