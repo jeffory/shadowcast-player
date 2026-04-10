@@ -1,0 +1,111 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: shadowcast-player-linux-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: shadowcast-player-macos-aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: shadowcast-player-windows-x86_64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-release-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-release-cargo-
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libv4l-dev \
+            libasound2-dev \
+            libavcodec-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libswscale-dev \
+            libswresample-dev \
+            pkg-config \
+            clang
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install ffmpeg pkg-config
+
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        run: |
+          $FFMPEG_ARCHIVE = "ffmpeg-release-full-shared.7z"
+          $FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/$FFMPEG_ARCHIVE"
+          Invoke-WebRequest -Uri $FFMPEG_URL -OutFile $FFMPEG_ARCHIVE
+          7z x $FFMPEG_ARCHIVE -o"$env:RUNNER_TEMP"
+          $FFMPEG_DIR = Get-ChildItem "$env:RUNNER_TEMP\ffmpeg-*-full_build-shared" -Directory | Select-Object -First 1
+          echo "FFMPEG_DIR=$FFMPEG_DIR" >> $env:GITHUB_ENV
+          echo "$FFMPEG_DIR\bin" >> $env:GITHUB_PATH
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p staging
+          cp target/${{ matrix.target }}/release/shadowcast-player staging/
+          cd staging
+          tar czf ../${{ matrix.artifact }}.tar.gz shadowcast-player
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p staging
+          cp target/${{ matrix.target }}/release/shadowcast-player staging/
+          cd staging
+          tar czf ../${{ matrix.artifact }}.tar.gz shadowcast-player
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          New-Item -ItemType Directory -Force -Path staging
+          Copy-Item "target\${{ matrix.target }}\release\shadowcast-player.exe" staging\
+          # Bundle FFmpeg DLLs needed at runtime
+          Copy-Item "$env:FFMPEG_DIR\bin\*.dll" staging\
+          Compress-Archive -Path staging\* -DestinationPath "${{ matrix.artifact }}.zip"
+
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload ${{ github.event.release.tag_name }} ${{ matrix.artifact }}.${{ runner.os == 'Windows' && 'zip' || 'tar.gz' }}
