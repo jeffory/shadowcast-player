@@ -233,7 +233,7 @@ fn find_shadowcast_macos() -> Option<CaptureDevice> {
 #[cfg(target_os = "macos")]
 fn enumerate_devices_macos() -> Vec<CaptureDevice> {
     use objc2_av_foundation::{
-        AVCaptureDevice, AVCaptureDeviceDiscoverySession, AVCaptureDevicePosition,
+        AVCaptureDeviceDiscoverySession, AVCaptureDevicePosition,
         AVCaptureDeviceTypeBuiltInWideAngleCamera, AVCaptureDeviceTypeExternal, AVMediaTypeVideo,
     };
     use objc2_foundation::NSArray;

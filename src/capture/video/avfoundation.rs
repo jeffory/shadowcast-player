@@ -33,7 +33,7 @@ struct RawFrame {
 pub struct AvFoundationSource {
     device: Retained<AVCaptureDevice>,
     session: Retained<AVCaptureSession>,
-    output: Retained<AVCaptureVideoDataOutput>,
+    _output: Retained<AVCaptureVideoDataOutput>,
     frame_rx: Receiver<RawFrame>,
     _delegate: Retained<FrameDelegate>,
     current_format: Option<CaptureFormat>,
@@ -168,7 +168,7 @@ impl AvFoundationSource {
         Ok(Self {
             device,
             session,
-            output,
+            _output: output,
             frame_rx,
             _delegate: delegate,
             current_format: None,
