@@ -336,13 +336,18 @@ impl ApplicationHandler for App {
         let capture_device = device::find_shadowcast();
 
         // Initialize video capture
-        let video_path = capture_device
-            .as_ref()
-            .map(|d| d.video_path.as_str())
-            .unwrap_or("/dev/video2");
+        let video_path = capture_device.as_ref().map(|d| d.video_path.as_str());
 
-        match PlatformVideoSource::new(video_path) {
-            Ok(mut source) => {
+        match video_path.map(PlatformVideoSource::new) {
+            None => {
+                log::info!("No capture device found, will retry on reconnect");
+                self.source_connected = false;
+            }
+            Some(Err(e)) => {
+                log::error!("Failed to open video device: {}", e);
+                self.source_connected = false;
+            }
+            Some(Ok(mut source)) => {
                 self.formats = source.supported_formats();
 
                 // Find MJPEG 1080p60 or fall back to first format
@@ -371,10 +376,6 @@ impl ApplicationHandler for App {
 
                 self.video_source = Some(source);
                 self.source_connected = true;
-            }
-            Err(e) => {
-                log::error!("Failed to open video device: {}", e);
-                self.source_connected = false;
             }
         }
 
