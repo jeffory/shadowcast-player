@@ -1,44 +1,8 @@
-use std::fmt;
-use std::time::Instant;
+use std::io::Cursor;
 use zune_jpeg::JpegDecoder;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PixelFormat {
-    Mjpeg,
-    Yuyv,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CaptureFormat {
-    pub width: u32,
-    pub height: u32,
-    pub fps: u32,
-    pub pixel_format: PixelFormat,
-}
-
-impl fmt::Display for CaptureFormat {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Known heights with their standard widths
-        let standard = matches!(
-            (self.height, self.width),
-            (480, 640 | 720)
-                | (576, 720)
-                | (600, 800)
-                | (720, 1280)
-                | (768, 1024)
-                | (960, 1280)
-                | (1024, 1280)
-                | (1080, 1920)
-                | (1440, 2560)
-        );
-
-        if standard {
-            write!(f, "{}p{}", self.height, self.fps)
-        } else {
-            write!(f, "{}x{}@{}", self.width, self.height, self.fps)
-        }
-    }
-}
+// Re-export shared types from shadowcast-core
+pub use shadowcast_core::{CaptureFormat, Frame, PixelFormat};
 
 /// Convert YUYV (4:2:2) buffer to RGB24.
 /// Uses BT.601 studio-range conversion.
@@ -70,17 +34,9 @@ pub fn yuyv_to_rgb(yuyv: &[u8], width: u32, height: u32) -> Vec<u8> {
     rgb
 }
 
-pub struct Frame {
-    pub width: u32,
-    pub height: u32,
-    pub data: Vec<u8>,
-    pub timestamp: Instant,
-}
-
 /// Decode an MJPEG frame (JPEG buffer) to RGB24.
-/// Returns (rgb_data, width, height).
 pub fn mjpeg_to_rgb(jpeg_data: &[u8]) -> anyhow::Result<(Vec<u8>, u32, u32)> {
-    let cursor = std::io::Cursor::new(jpeg_data);
+    let cursor = Cursor::new(jpeg_data);
     let mut decoder = JpegDecoder::new(cursor);
     decoder
         .decode_headers()
