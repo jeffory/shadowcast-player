@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "shadowcast-core"]
+
 [package]
 name = "shadowcast-player"
 version = "0.1.0"
@@ -22,6 +25,7 @@ pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 env_logger = "0.11"
 log = "0.4"
+shadowcast-core = { path = "shadowcast-core" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 v4l = "0.14"
