@@ -55,6 +55,7 @@ pub struct App {
     last_audio_retry: Option<Instant>,
     /// Cached audio device name candidates for retry.
     audio_names: Vec<String>,
+    #[allow(dead_code)]
     config: AppConfig,
     plugin_host: Option<PluginHost>,
 }
@@ -420,6 +421,7 @@ impl ApplicationHandler for App {
         }
 
         // Initialize plugin host
+        #[allow(unused_mut)]
         let mut plugin_host = PluginHost::new();
 
         #[cfg(feature = "example-logger")]
