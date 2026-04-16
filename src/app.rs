@@ -9,10 +9,14 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
+use shadowcast_core::{AppCommand as PluginCommand, AppEvent, Frame as PluginFrame};
+
 use crate::capture::audio::{AudioSampleReceiver, AudioSource, CpalAudioSource};
 use crate::capture::device;
 use crate::capture::format::CaptureFormat;
 use crate::capture::video::{PlatformVideoSource, VideoSource};
+use crate::config::AppConfig;
+use crate::plugin::PluginHost;
 use crate::record::encoder::{Encoder, EncoderConfig, FfmpegEncoder};
 use crate::record::screenshot::take_screenshot;
 use crate::render::display::DisplayRenderer;
@@ -51,6 +55,8 @@ pub struct App {
     last_audio_retry: Option<Instant>,
     /// Cached audio device name candidates for retry.
     audio_names: Vec<String>,
+    config: AppConfig,
+    plugin_host: Option<PluginHost>,
 }
 
 impl Drop for App {
@@ -94,6 +100,8 @@ impl App {
             last_reconnect_attempt: None,
             last_audio_retry: None,
             audio_names: Vec::new(),
+            config: AppConfig::load(),
+            plugin_host: None,
         }
     }
 
@@ -132,6 +140,13 @@ impl App {
             }
             self.encoder = Some(encoder);
 
+            if let Some(host) = &self.plugin_host {
+                let path = self.encoder.as_ref()
+                    .map(|e| e.output_path().to_path_buf())
+                    .unwrap_or_default();
+                host.distribute_event(AppEvent::RecordingStarted { path });
+            }
+
             if let Some(audio) = &self.audio_source {
                 audio.set_recording(true);
             }
@@ -150,7 +165,12 @@ impl App {
 
         if let Some(mut encoder) = self.encoder.take() {
             match encoder.stop() {
-                Ok(path) => log::info!("Recording saved to {:?}", path),
+                Ok(path) => {
+                    log::info!("Recording saved to {:?}", path);
+                    if let Some(host) = &self.plugin_host {
+                        host.distribute_event(AppEvent::RecordingStopped { path });
+                    }
+                }
                 Err(e) => log::error!("Failed to stop encoder: {}", e),
             }
         }
@@ -183,6 +203,12 @@ impl App {
         // Resize window to new resolution
         if let Some(window) = &self.window {
             let _ = window.request_inner_size(LogicalSize::new(format.width, format.height));
+        }
+
+        if let Some(host) = &self.plugin_host {
+            if let Some(fmt) = self.formats.get(self.toolbar.selected_format_index).cloned() {
+                host.distribute_event(AppEvent::FormatChanged { format: fmt });
+            }
         }
     }
 
@@ -271,6 +297,11 @@ impl App {
                 self.video_source = Some(source);
                 self.source_error_count = 0;
                 self.source_connected = true;
+                if let Some(host) = &self.plugin_host {
+                    host.distribute_event(AppEvent::DeviceConnected {
+                        name: "ShadowCast".into(),
+                    });
+                }
                 log::info!("Video source reconnected");
 
                 // Reconnect audio too
@@ -388,6 +419,20 @@ impl ApplicationHandler for App {
             log::warn!("Audio not yet available, will retry in background");
         }
 
+        // Initialize plugin host
+        let plugin_host = PluginHost::new();
+        // Future: register plugins here based on config
+        self.plugin_host = Some(plugin_host);
+
+        // Emit initial device connected event if source was found
+        if self.source_connected {
+            if let Some(host) = &self.plugin_host {
+                host.distribute_event(AppEvent::DeviceConnected {
+                    name: capture_device.as_ref().map(|d| d.name.clone()).unwrap_or_default(),
+                });
+            }
+        }
+
         // Store renderer and window, make visible
         self.renderer = Some(renderer);
         window.set_visible(true);
@@ -415,12 +460,21 @@ impl ApplicationHandler for App {
                 if self.toolbar.is_recording {
                     self.stop_recording();
                 }
+                if let Some(mut host) = self.plugin_host.take() {
+                    host.shutdown();
+                }
                 event_loop.exit();
             }
 
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size.width, size.height);
+                }
+                if let Some(host) = &self.plugin_host {
+                    host.distribute_event(AppEvent::WindowResized {
+                        width: size.width,
+                        height: size.height,
+                    });
                 }
             }
 
@@ -498,6 +552,17 @@ impl ApplicationHandler for App {
                             self.last_frame_width = frame.width;
                             self.last_frame_height = frame.height;
 
+                            // Distribute frame to plugins
+                            if let Some(host) = &self.plugin_host {
+                                let plugin_frame = Arc::new(PluginFrame {
+                                    width: frame.width,
+                                    height: frame.height,
+                                    data: frame.data.clone(),
+                                    timestamp: frame.timestamp,
+                                });
+                                host.distribute_frame(plugin_frame);
+                            }
+
                             // Send to encoder if recording
                             if let Some(tx) = &self.video_frame_tx {
                                 let _ = tx.try_send(frame.data.clone());
@@ -521,6 +586,9 @@ impl ApplicationHandler for App {
                                 );
                                 self.source_connected = false;
                                 self.audio_connected = false;
+                                if let Some(host) = &self.plugin_host {
+                                    host.distribute_event(AppEvent::DeviceDisconnected);
+                                }
                                 // Drop the stale source and clear the display
                                 self.video_source = None;
                                 if let Some(renderer) = &mut self.renderer {
@@ -564,6 +632,49 @@ impl ApplicationHandler for App {
 
                 if self.toolbar.scale_mode_changed {
                     self.toolbar.scale_mode_changed = false;
+                }
+
+                // Poll plugin commands
+                if let Some(host) = &self.plugin_host {
+                    for cmd in host.poll_commands() {
+                        match cmd {
+                            PluginCommand::TakeScreenshot => {
+                                self.toolbar.screenshot_requested = true;
+                            }
+                            PluginCommand::StartRecording => {
+                                if !self.toolbar.is_recording {
+                                    self.toolbar.toggle_recording();
+                                }
+                            }
+                            PluginCommand::StopRecording => {
+                                if self.toolbar.is_recording {
+                                    self.toolbar.toggle_recording();
+                                }
+                            }
+                            PluginCommand::SetFormat(fmt) => {
+                                if let Some(idx) = self.formats.iter().position(|f| *f == fmt) {
+                                    self.toolbar.selected_format_index = idx;
+                                    self.toolbar.format_changed = true;
+                                }
+                            }
+                            PluginCommand::ToggleFullscreen => {
+                                if let Some(window) = &self.window {
+                                    let fullscreen = if window.fullscreen().is_some() {
+                                        None
+                                    } else {
+                                        Some(Fullscreen::Borderless(None))
+                                    };
+                                    window.set_fullscreen(fullscreen);
+                                }
+                            }
+                            PluginCommand::Quit => {
+                                if self.toolbar.is_recording {
+                                    self.stop_recording();
+                                }
+                                log::info!("Quit requested by plugin");
+                            }
+                        }
+                    }
                 }
 
                 // Update scale mode every frame (cheap buffer write)

@@ -61,6 +61,10 @@ impl FfmpegEncoder {
             output_path: PathBuf::new(),
         }
     }
+
+    pub fn output_path(&self) -> &std::path::Path {
+        &self.output_path
+    }
 }
 
 impl Encoder for FfmpegEncoder {
