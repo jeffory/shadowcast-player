@@ -420,8 +420,21 @@ impl ApplicationHandler for App {
         }
 
         // Initialize plugin host
-        let plugin_host = PluginHost::new();
-        // Future: register plugins here based on config
+        let mut plugin_host = PluginHost::new();
+
+        #[cfg(feature = "example-logger")]
+        {
+            let logger_config = self
+                .config
+                .plugin_enabled("example-logger")
+                .cloned()
+                .unwrap_or_default();
+            plugin_host.register(
+                shadowcast_plugin_logger::LoggerPlugin,
+                logger_config,
+            );
+        }
+
         self.plugin_host = Some(plugin_host);
 
         // Emit initial device connected event if source was found

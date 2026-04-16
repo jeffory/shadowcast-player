@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "shadowcast-core"]
+members = [".", "shadowcast-core", "plugins/example-logger"]
 
 [package]
 name = "shadowcast-player"
@@ -27,6 +27,11 @@ env_logger = "0.11"
 log = "0.4"
 toml = "0.8"
 shadowcast-core = { path = "shadowcast-core" }
+shadowcast-plugin-logger = { path = "plugins/example-logger", optional = true }
+
+[features]
+default = ["example-logger"]
+example-logger = ["dep:shadowcast-plugin-logger"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 v4l = "0.14"

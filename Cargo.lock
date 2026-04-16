@@ -3205,12 +3205,23 @@ dependencies = [
  "pollster",
  "ringbuf",
  "shadowcast-core",
+ "shadowcast-plugin-logger",
  "toml",
  "v4l",
  "wgpu",
  "windows 0.62.2",
  "winit",
  "zune-jpeg",
+]
+
+[[package]]
+name = "shadowcast-plugin-logger"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "log",
+ "shadowcast-core",
+ "toml",
 ]
 
 [[package]]
