@@ -58,6 +58,7 @@ pub struct App {
     #[allow(dead_code)]
     config: AppConfig,
     plugin_host: Option<PluginHost>,
+    quit_requested: bool,
 }
 
 impl Drop for App {
@@ -103,6 +104,7 @@ impl App {
             audio_names: Vec::new(),
             config: AppConfig::load(),
             plugin_host: None,
+            quit_requested: false,
         }
     }
 
@@ -683,13 +685,23 @@ impl ApplicationHandler for App {
                                 }
                             }
                             PluginCommand::Quit => {
-                                if self.toolbar.is_recording {
-                                    self.stop_recording();
-                                }
                                 log::info!("Quit requested by plugin");
+                                self.quit_requested = true;
                             }
                         }
                     }
+                }
+
+                // Handle plugin quit request
+                if self.quit_requested {
+                    if self.toolbar.is_recording {
+                        self.stop_recording();
+                    }
+                    if let Some(mut host) = self.plugin_host.take() {
+                        host.shutdown();
+                    }
+                    event_loop.exit();
+                    return;
                 }
 
                 // Update scale mode every frame (cheap buffer write)

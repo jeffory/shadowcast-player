@@ -44,6 +44,7 @@ impl PluginHost {
             event_rx,
             command_tx,
             config,
+            stop_flag: Arc::clone(&stop_flag),
         };
 
         let name = plugin.name().to_string();

@@ -75,6 +75,7 @@ pub struct PluginContext {
     pub event_rx: Receiver<AppEvent>,
     pub command_tx: Sender<AppCommand>,
     pub config: toml::Table,
+    pub stop_flag: Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub trait Plugin: Send + 'static {
@@ -128,6 +129,7 @@ mod tests {
             event_rx,
             command_tx,
             config: toml::Table::new(),
+            stop_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
 
         let frame = Arc::new(Frame {

@@ -63,6 +63,7 @@ mod tests {
             event_rx,
             command_tx,
             config: toml::Table::new(),
+            stop_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
 
         let handle = std::thread::spawn(move || {
