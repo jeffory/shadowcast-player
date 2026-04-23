@@ -25,9 +25,9 @@ pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 env_logger = "0.11"
 log = "0.4"
-toml = "0.8"
 shadowcast-core = { path = "shadowcast-core" }
 shadowcast-plugin-logger = { path = "plugins/example-logger", optional = true }
+toml = "0.8"
 
 [features]
 default = ["example-logger"]

@@ -1,11 +1,10 @@
 use std::io::Cursor;
-use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
 use zune_jpeg::JpegDecoder;
 
 // Re-export shared types from shadowcast-core
-pub use shadowcast_core::{CaptureFormat, Frame, PixelFormat};
+pub use shadowcast_core::{CaptureFormat, PixelFormat};
 
 /// Convert YUYV (4:2:2) buffer to RGB24.
 /// Uses BT.601 studio-range conversion.
