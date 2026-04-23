@@ -64,8 +64,10 @@ impl Toolbar {
             .unwrap_or(Duration::ZERO)
     }
 
-    pub fn ui(&mut self, ctx: &egui::Context, formats: &[CaptureFormat]) {
-        // Auto-hide check
+    /// Per-frame bookkeeping that doesn't need an `egui::Context`. Split out
+    /// from `ui()` so the render loop can skip the egui pass entirely when
+    /// nothing is being drawn.
+    pub fn tick(&mut self) {
         if self.visible {
             if let Some(last) = self.last_mouse_over {
                 if last.elapsed() > self.auto_hide_delay {
@@ -73,6 +75,10 @@ impl Toolbar {
                 }
             }
         }
+    }
+
+    pub fn ui(&mut self, ctx: &egui::Context, formats: &[CaptureFormat]) {
+        self.tick();
 
         // Toolbar — only when visible, floating centered at bottom with padding
         if self.visible {

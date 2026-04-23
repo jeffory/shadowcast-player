@@ -107,7 +107,11 @@ impl DisplayRenderer {
             present_mode: wgpu::PresentMode::AutoVsync,
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            // One frame in flight instead of two: removes ~one vsync interval
+            // (~16 ms at 60 Hz) of added end-to-end display latency. The extra
+            // pipelining headroom isn't needed for a single fullscreen textured
+            // quad + egui overlay on modern GPUs.
+            desired_maximum_frame_latency: 1,
         };
         surface.configure(&device, &surface_config);
 

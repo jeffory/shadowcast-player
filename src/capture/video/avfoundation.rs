@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
+use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError, TrySendError};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass, Message};
@@ -39,6 +39,7 @@ pub struct AvFoundationSource {
     frame_rx: Receiver<RawFrame>,
     _delegate: Retained<FrameDelegate>,
     current_format: Option<CaptureFormat>,
+    stats: Arc<FrameStats>,
 }
 
 // The delegate object that receives frames from AVCaptureVideoDataOutput.
@@ -162,9 +163,13 @@ impl AvFoundationSource {
         unsafe { output.setVideoSettings(Some(&settings)) };
         unsafe { output.setAlwaysDiscardsLateVideoFrames(true) };
 
-        // Set up the delegate with a serial dispatch queue
-        let (frame_tx, frame_rx) = bounded(2);
-        let delegate = FrameDelegate::new(frame_tx, stats);
+        // Set up the delegate with a serial dispatch queue. Channel depth of 3
+        // gives the render thread a one-frame tolerance for stalls before
+        // capture starts dropping, without adding meaningful latency — with
+        // the drain-to-latest receive in `try_next_frame`, stale frames are
+        // discarded rather than queued up.
+        let (frame_tx, frame_rx) = bounded(3);
+        let delegate = FrameDelegate::new(frame_tx, stats.clone());
 
         let queue = dispatch2::DispatchQueue::new("com.shadowcast-player.video-capture", None);
         unsafe {
@@ -186,6 +191,7 @@ impl AvFoundationSource {
             frame_rx,
             _delegate: delegate,
             current_format: None,
+            stats,
         })
     }
 }
@@ -343,19 +349,36 @@ impl VideoSource for AvFoundationSource {
         Ok(())
     }
 
-    fn next_frame(&mut self) -> Result<Frame> {
-        let raw = self
-            .frame_rx
-            .recv()
-            .context("Video capture channel closed")?;
-
-        Ok(Frame {
+    fn try_next_frame(&mut self) -> Result<Option<Frame>> {
+        // Drain any queued frames and keep only the newest. Older frames are
+        // already stale by the time the render loop sees them; rendering them
+        // would just push user-visible latency further from the live signal.
+        let mut latest: Option<RawFrame> = None;
+        let mut dropped = 0u64;
+        loop {
+            match self.frame_rx.try_recv() {
+                Ok(raw) => {
+                    if latest.is_some() {
+                        dropped += 1;
+                    }
+                    latest = Some(raw);
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    anyhow::bail!("Video capture channel closed");
+                }
+            }
+        }
+        if dropped > 0 {
+            self.stats.add_dropped_at_render(dropped);
+        }
+        Ok(latest.map(|raw| Frame {
             width: raw.width,
             height: raw.height,
-            data: raw.data,
+            data: Arc::new(raw.data),
             pixel_format: FramePixelFormat::Bgra8,
             timestamp: raw.timestamp,
-        })
+        }))
     }
 
     fn stop(&mut self) -> Result<()> {

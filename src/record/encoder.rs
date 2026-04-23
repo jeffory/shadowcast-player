@@ -47,7 +47,7 @@ pub trait Encoder: Send {
     fn start(
         &mut self,
         config: EncoderConfig,
-        video_rx: Receiver<Vec<u8>>,
+        video_rx: Receiver<Arc<Vec<u8>>>,
         audio_rx: Receiver<Vec<i16>>,
     ) -> Result<()>;
     fn stop(&mut self) -> Result<PathBuf>;
@@ -81,7 +81,7 @@ impl Encoder for FfmpegEncoder {
     fn start(
         &mut self,
         config: EncoderConfig,
-        video_rx: Receiver<Vec<u8>>,
+        video_rx: Receiver<Arc<Vec<u8>>>,
         audio_rx: Receiver<Vec<i16>>,
     ) -> Result<()> {
         let path = recording_path();
@@ -121,7 +121,7 @@ impl Encoder for FfmpegEncoder {
 
 fn encode_loop(
     config: EncoderConfig,
-    video_rx: Receiver<Vec<u8>>,
+    video_rx: Receiver<Arc<Vec<u8>>>,
     audio_rx: Receiver<Vec<i16>>,
     stop_flag: Arc<AtomicBool>,
     path: PathBuf,

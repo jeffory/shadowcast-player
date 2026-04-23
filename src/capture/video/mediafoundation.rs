@@ -336,7 +336,10 @@ impl VideoSource for MediaFoundationSource {
         Ok(())
     }
 
-    fn next_frame(&mut self) -> Result<Frame> {
+    fn try_next_frame(&mut self) -> Result<Option<Frame>> {
+        // Media Foundation's `ReadSample` blocks until the next sample. We
+        // always return `Some` on success; the render loop handles this the
+        // same way the old blocking `next_frame` did.
         let current_format = self
             .current_format
             .as_ref()
@@ -381,13 +384,13 @@ impl VideoSource for MediaFoundationSource {
             };
 
             self.stats.inc_captured();
-            Ok(Frame {
+            Ok(Some(Frame {
                 width,
                 height,
-                data,
+                data: Arc::new(data),
                 pixel_format: FramePixelFormat::Rgb8,
                 timestamp: Instant::now(),
-            })
+            }))
         }
     }
 

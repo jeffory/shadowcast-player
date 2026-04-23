@@ -14,8 +14,15 @@ pub trait VideoSource {
     /// Starts the capture stream.
     fn start(&mut self) -> Result<()>;
 
-    /// Returns the next decoded RGB frame from the stream.
-    fn next_frame(&mut self) -> Result<Frame>;
+    /// Returns the most recent frame available, draining any stale frames so
+    /// the caller always sees the newest pixels. Returns `Ok(None)` if no new
+    /// frame is available since the last call; callers should then re-use the
+    /// previously uploaded frame rather than block.
+    ///
+    /// Backends that do not have an internal capture thread / channel (V4L2,
+    /// Media Foundation) may block briefly inside this call and will always
+    /// return `Ok(Some(..))` on success.
+    fn try_next_frame(&mut self) -> Result<Option<Frame>>;
 
     /// Stops the capture stream.
     fn stop(&mut self) -> Result<()>;

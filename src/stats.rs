@@ -11,6 +11,12 @@ pub struct FrameStats {
     /// Frames dropped by the capture backend because the render thread
     /// couldn't keep up (`try_send` returned `Err` on a full channel).
     pub dropped_at_capture: AtomicU64,
+    /// Frames discarded by the render thread's drain-to-latest logic: when
+    /// more than one frame is queued on `try_next_frame`, only the newest is
+    /// rendered and the older ones are counted here. This is expected during
+    /// brief render stalls and is the mechanism that keeps display latency
+    /// bounded instead of piling up stale frames.
+    pub dropped_at_render: AtomicU64,
     /// Frames that reached the GPU and were presented.
     pub rendered: AtomicU64,
     /// Times the render thread found the frame channel empty — i.e. we were
@@ -28,6 +34,10 @@ impl FrameStats {
 
     pub fn inc_dropped_at_capture(&self) {
         self.dropped_at_capture.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn add_dropped_at_render(&self, n: u64) {
+        self.dropped_at_render.fetch_add(n, Ordering::Relaxed);
     }
 
     pub fn inc_rendered(&self) {
@@ -48,6 +58,7 @@ impl FrameStats {
 pub struct StatsSnapshot {
     pub captured_per_sec: u64,
     pub dropped_per_sec: u64,
+    pub dropped_at_render_per_sec: u64,
     pub rendered_per_sec: u64,
     pub recv_stalled_per_sec: u64,
     pub peak_frame_us: u64,
@@ -60,6 +71,7 @@ pub struct StatsTicker {
     last_tick: Instant,
     last_captured: u64,
     last_dropped: u64,
+    last_dropped_at_render: u64,
     last_rendered: u64,
     last_recv_stalled: u64,
 }
@@ -71,6 +83,7 @@ impl StatsTicker {
             last_tick: Instant::now(),
             last_captured: 0,
             last_dropped: 0,
+            last_dropped_at_render: 0,
             last_rendered: 0,
             last_recv_stalled: 0,
         }
@@ -85,6 +98,7 @@ impl StatsTicker {
 
         let captured = stats.captured.load(Ordering::Relaxed);
         let dropped = stats.dropped_at_capture.load(Ordering::Relaxed);
+        let dropped_at_render = stats.dropped_at_render.load(Ordering::Relaxed);
         let rendered = stats.rendered.load(Ordering::Relaxed);
         let recv_stalled = stats.recv_stalled.load(Ordering::Relaxed);
         let peak_frame_us = stats.peak_frame_us.swap(0, Ordering::Relaxed);
@@ -92,6 +106,8 @@ impl StatsTicker {
         let snap = StatsSnapshot {
             captured_per_sec: captured.saturating_sub(self.last_captured),
             dropped_per_sec: dropped.saturating_sub(self.last_dropped),
+            dropped_at_render_per_sec: dropped_at_render
+                .saturating_sub(self.last_dropped_at_render),
             rendered_per_sec: rendered.saturating_sub(self.last_rendered),
             recv_stalled_per_sec: recv_stalled.saturating_sub(self.last_recv_stalled),
             peak_frame_us,
@@ -99,6 +115,7 @@ impl StatsTicker {
 
         self.last_captured = captured;
         self.last_dropped = dropped;
+        self.last_dropped_at_render = dropped_at_render;
         self.last_rendered = rendered;
         self.last_recv_stalled = recv_stalled;
         self.last_tick = Instant::now();
@@ -117,10 +134,11 @@ impl StatsSnapshot {
     /// Formatted single-line summary for logging.
     pub fn summary(&self) -> String {
         format!(
-            "captured={} rendered={} dropped_at_capture={} recv_stalled={} peak_frame={:.2}ms",
+            "captured={} rendered={} dropped_at_capture={} dropped_at_render={} recv_stalled={} peak_frame={:.2}ms",
             self.captured_per_sec,
             self.rendered_per_sec,
             self.dropped_per_sec,
+            self.dropped_at_render_per_sec,
             self.recv_stalled_per_sec,
             self.peak_frame_us as f64 / 1000.0
         )

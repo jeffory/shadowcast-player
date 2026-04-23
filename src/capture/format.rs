@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::Arc;
 use std::time::Instant;
 use zune_jpeg::JpegDecoder;
 
@@ -96,7 +97,10 @@ impl FramePixelFormat {
 pub struct Frame {
     pub width: u32,
     pub height: u32,
-    pub data: Vec<u8>,
+    /// Pixel buffer shared via `Arc` so fan-out to the recorder / screenshot /
+    /// last-frame slot is a cheap refcount bump instead of a full `Vec` clone
+    /// (at 1080p60 BGRA that is ~475 MB/s of allocator traffic avoided).
+    pub data: Arc<Vec<u8>>,
     pub pixel_format: FramePixelFormat,
     pub timestamp: Instant,
 }

@@ -154,7 +154,10 @@ impl VideoSource for V4l2Source {
         Ok(())
     }
 
-    fn next_frame(&mut self) -> Result<Frame> {
+    fn try_next_frame(&mut self) -> Result<Option<Frame>> {
+        // V4L2's mmap stream doesn't expose a non-blocking path here, so we
+        // block briefly and always return `Some`. The render loop's budget
+        // absorbs this the same way the old blocking `next_frame` did.
         let current_format = self
             .current_format
             .as_ref()
@@ -179,13 +182,13 @@ impl VideoSource for V4l2Source {
         };
 
         self.stats.inc_captured();
-        Ok(Frame {
+        Ok(Some(Frame {
             width,
             height,
-            data,
+            data: Arc::new(data),
             pixel_format: FramePixelFormat::Rgb8,
             timestamp: Instant::now(),
-        })
+        }))
     }
 
     fn stop(&mut self) -> Result<()> {
