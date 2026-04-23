@@ -91,10 +91,15 @@ impl DisplayRenderer {
         let queue = Arc::new(queue);
 
         let surface_caps = surface.get_capabilities(&adapter);
+        // egui does its own gamma handling and warns if we hand it an sRGB
+        // surface, so prefer a linear `Rgba8Unorm` / `Bgra8Unorm`. The sample
+        // quad shader outputs in the same color space as its input (the
+        // capture device gives us already-gamma-encoded pixels), so a linear
+        // surface is visually correct for the video path too.
         let surface_format = surface_caps
             .formats
             .iter()
-            .find(|f| f.is_srgb())
+            .find(|f| !f.is_srgb())
             .copied()
             .unwrap_or(surface_caps.formats[0]);
 
@@ -247,7 +252,7 @@ impl DisplayRenderer {
             bind_group: None,
             texture_width: 0,
             texture_height: 0,
-            texture_format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            texture_format: wgpu::TextureFormat::Bgra8Unorm,
             uniform_buffer,
             uniform_bind_group,
             _uniform_bind_group_layout: uniform_bind_group_layout,
@@ -268,9 +273,14 @@ impl DisplayRenderer {
         height: u32,
         format: FramePixelFormat,
     ) {
+        // Both the texture and the surface are non-sRGB (`*Unorm`), so the
+        // already-gamma-encoded bytes from the capture device pass through
+        // unchanged: no automatic sRGB decode on sample, no re-encode on
+        // surface write. This matches what egui wants (it does its own
+        // gamma) and produces a visually correct video image.
         let target_format = match format {
-            FramePixelFormat::Bgra8 => wgpu::TextureFormat::Bgra8UnormSrgb,
-            FramePixelFormat::Rgb8 => wgpu::TextureFormat::Rgba8UnormSrgb,
+            FramePixelFormat::Bgra8 => wgpu::TextureFormat::Bgra8Unorm,
+            FramePixelFormat::Rgb8 => wgpu::TextureFormat::Rgba8Unorm,
         };
 
         if self.texture.is_none()

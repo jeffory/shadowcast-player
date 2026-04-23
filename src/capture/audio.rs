@@ -20,18 +20,42 @@ fn i16_to_f32(s: i16) -> f32 {
     s as f32 / -(i16::MIN as f32)
 }
 
+/// Sample formats we know how to convert to/from `i16`. Ordered by preference
+/// (I16 first so we avoid conversion, F32 next, I8 last as a narrow fallback
+/// for ALSA configurations that expose nothing else).
+fn format_preference(fmt: SampleFormat) -> Option<u8> {
+    match fmt {
+        SampleFormat::I16 => Some(0),
+        SampleFormat::F32 => Some(1),
+        SampleFormat::I8 => Some(2),
+        _ => None,
+    }
+}
+
 /// Pick a supported input config for the given device, preferring 48kHz stereo
-/// (what the encoder expects) and falling back to the device's default.
+/// in a sample format we actually handle. Some ALSA setups expose `I8` as the
+/// device default, which the stream builder below can't consume — filtering
+/// here means we pick a usable format up-front instead of bailing at start.
 fn pick_input_config(device: &cpal::Device) -> Result<SupportedStreamConfig> {
     let target_rate = SampleRate(48000);
     if let Ok(ranges) = device.supported_input_configs() {
+        let mut best: Option<(u8, cpal::SupportedStreamConfigRange)> = None;
         for range in ranges {
-            if range.channels() == 2
-                && range.min_sample_rate() <= target_rate
-                && range.max_sample_rate() >= target_rate
+            if range.channels() != 2
+                || range.min_sample_rate() > target_rate
+                || range.max_sample_rate() < target_rate
             {
-                return Ok(range.with_sample_rate(target_rate));
+                continue;
             }
+            let Some(pref) = format_preference(range.sample_format()) else {
+                continue;
+            };
+            if best.as_ref().map_or(true, |(p, _)| pref < *p) {
+                best = Some((pref, range));
+            }
+        }
+        if let Some((_, range)) = best {
+            return Ok(range.with_sample_rate(target_rate));
         }
     }
     device
@@ -40,20 +64,31 @@ fn pick_input_config(device: &cpal::Device) -> Result<SupportedStreamConfig> {
 }
 
 /// Pick a supported output config for the given device matching (rate, channels)
-/// if possible, otherwise the device's default.
+/// if possible, otherwise the device's default. Prefers sample formats the
+/// output callback below knows how to fill.
 fn pick_output_config(
     device: &cpal::Device,
     rate: SampleRate,
     channels: u16,
 ) -> Result<SupportedStreamConfig> {
     if let Ok(ranges) = device.supported_output_configs() {
+        let mut best: Option<(u8, cpal::SupportedStreamConfigRange)> = None;
         for range in ranges {
-            if range.channels() == channels
-                && range.min_sample_rate() <= rate
-                && range.max_sample_rate() >= rate
+            if range.channels() != channels
+                || range.min_sample_rate() > rate
+                || range.max_sample_rate() < rate
             {
-                return Ok(range.with_sample_rate(rate));
+                continue;
             }
+            let Some(pref) = format_preference(range.sample_format()) else {
+                continue;
+            };
+            if best.as_ref().map_or(true, |(p, _)| pref < *p) {
+                best = Some((pref, range));
+            }
+        }
+        if let Some((_, range)) = best {
+            return Ok(range.with_sample_rate(rate));
         }
     }
     device
@@ -265,6 +300,35 @@ impl AudioSource for CpalAudioSource {
                     )
                     .context("Failed to build audio input stream")?
             }
+            SampleFormat::I8 => {
+                let volume = Arc::clone(&self.volume);
+                let recording = Arc::clone(&self.recording);
+                let sender = self.sender.clone();
+                input_device
+                    .build_input_stream(
+                        &input_config,
+                        move |data: &[i8], _: &cpal::InputCallbackInfo| {
+                            let vol = f32::from_bits(volume.load(Ordering::Relaxed));
+                            let mut scaled: Vec<i16> = Vec::with_capacity(data.len());
+                            for &s in data {
+                                let widened = (s as i16) << 8;
+                                let v = ((widened as f32 * vol).round())
+                                    .clamp(i16::MIN as f32, i16::MAX as f32)
+                                    as i16;
+                                scaled.push(v);
+                            }
+                            for &s in &scaled {
+                                let _ = producer.try_push(s);
+                            }
+                            if recording.load(Ordering::Relaxed) {
+                                let _ = sender.try_send(scaled);
+                            }
+                        },
+                        err_fn,
+                        None,
+                    )
+                    .context("Failed to build audio input stream")?
+            }
             other => {
                 anyhow::bail!("Unsupported audio input sample format: {:?}", other);
             }
@@ -318,6 +382,18 @@ impl AudioSource for CpalAudioSource {
                     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                         for sample in data.iter_mut() {
                             *sample = i16_to_f32(consumer.try_pop().unwrap_or(0));
+                        }
+                    },
+                    out_err_fn,
+                    None,
+                )
+                .context("Failed to build audio output stream")?,
+            SampleFormat::I8 => output_device
+                .build_output_stream(
+                    &output_config,
+                    move |data: &mut [i8], _: &cpal::OutputCallbackInfo| {
+                        for sample in data.iter_mut() {
+                            *sample = (consumer.try_pop().unwrap_or(0) >> 8) as i8;
                         }
                     },
                     out_err_fn,

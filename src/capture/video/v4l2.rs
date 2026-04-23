@@ -1,7 +1,10 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError, TrySendError};
 use v4l::buffer::Type as BufType;
 use v4l::format::{Format as V4lFormat, FourCC};
 use v4l::frameinterval::FrameIntervalEnum;
@@ -17,12 +20,40 @@ use crate::stats::FrameStats;
 
 use super::VideoSource;
 
+/// Decoded frame handed from the worker thread to the render thread.
+struct RawFrame {
+    data: Vec<u8>,
+    width: u32,
+    height: u32,
+    timestamp: Instant,
+}
+
+struct WorkerHandle {
+    thread: Option<JoinHandle<()>>,
+    stop_flag: Arc<AtomicBool>,
+    frame_rx: Receiver<RawFrame>,
+}
+
+impl WorkerHandle {
+    fn shutdown(mut self) {
+        self.stop_flag.store(true, Ordering::SeqCst);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
 /// V4L2 capture backend using mmap streaming.
+///
+/// Capture + MJPEG/YUYV decode run on a dedicated worker thread so the render
+/// loop never blocks on `ioctl(DQBUF)` or CPU-bound decode. Frames cross to
+/// the render thread via a bounded channel (drain-to-latest on consumption).
 pub struct V4l2Source {
-    device: Device,
-    stream: Option<Stream<'static>>,
+    device_path: String,
+    device: Option<Device>,
     current_format: Option<CaptureFormat>,
     stats: Arc<FrameStats>,
+    worker: Option<WorkerHandle>,
 }
 
 impl V4l2Source {
@@ -30,11 +61,21 @@ impl V4l2Source {
     pub fn new(device_path: &str, stats: Arc<FrameStats>) -> Result<Self> {
         let device = Device::with_path(device_path).context("Failed to open V4L2 device")?;
         Ok(Self {
-            device,
-            stream: None,
+            device_path: device_path.to_string(),
+            device: Some(device),
             current_format: None,
             stats,
+            worker: None,
         })
+    }
+
+    fn ensure_device(&mut self) -> Result<&Device> {
+        if self.device.is_none() {
+            self.device = Some(
+                Device::with_path(&self.device_path).context("Failed to reopen V4L2 device")?,
+            );
+        }
+        Ok(self.device.as_ref().unwrap())
     }
 }
 
@@ -49,11 +90,74 @@ fn fourcc_to_pixel_format(fourcc: &FourCC) -> Option<PixelFormat> {
     }
 }
 
+fn worker_loop(
+    device: Device,
+    format: CaptureFormat,
+    sender: Sender<RawFrame>,
+    stop_flag: Arc<AtomicBool>,
+    stats: Arc<FrameStats>,
+) {
+    let mut stream = match Stream::with_buffers(&device, BufType::VideoCapture, 4) {
+        Ok(s) => s,
+        Err(e) => {
+            log::error!("v4l2 worker: failed to create mmap stream: {}", e);
+            return;
+        }
+    };
+
+    while !stop_flag.load(Ordering::Relaxed) {
+        let (buf, _meta) = match CaptureStream::next(&mut stream) {
+            Ok(pair) => pair,
+            Err(e) => {
+                log::error!("v4l2 worker: capture error: {}", e);
+                break;
+            }
+        };
+
+        let frame = match format.pixel_format {
+            PixelFormat::Mjpeg => match mjpeg_to_rgb(buf) {
+                Ok((data, width, height)) => RawFrame {
+                    data,
+                    width,
+                    height,
+                    timestamp: Instant::now(),
+                },
+                Err(e) => {
+                    log::warn!("v4l2 worker: JPEG decode failed: {}", e);
+                    continue;
+                }
+            },
+            PixelFormat::Yuyv => {
+                let data = yuyv_to_rgb(buf, format.width, format.height);
+                RawFrame {
+                    data,
+                    width: format.width,
+                    height: format.height,
+                    timestamp: Instant::now(),
+                }
+            }
+        };
+
+        stats.inc_captured();
+        match sender.try_send(frame) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                stats.inc_dropped_at_capture();
+            }
+            Err(TrySendError::Disconnected(_)) => break,
+        }
+    }
+}
+
 impl VideoSource for V4l2Source {
     fn supported_formats(&self) -> Vec<CaptureFormat> {
         let mut formats = Vec::new();
 
-        let descriptions = match self.device.enum_formats() {
+        let Some(device) = self.device.as_ref() else {
+            return formats;
+        };
+
+        let descriptions = match device.enum_formats() {
             Ok(d) => d,
             Err(_) => return formats,
         };
@@ -61,10 +165,10 @@ impl VideoSource for V4l2Source {
         for desc in &descriptions {
             let pixel_format = match fourcc_to_pixel_format(&desc.fourcc) {
                 Some(pf) => pf,
-                None => continue, // Skip unsupported formats
+                None => continue,
             };
 
-            let framesizes = match self.device.enum_framesizes(desc.fourcc) {
+            let framesizes = match device.enum_framesizes(desc.fourcc) {
                 Ok(fs) => fs,
                 Err(_) => continue,
             };
@@ -72,7 +176,7 @@ impl VideoSource for V4l2Source {
             for framesize in framesizes {
                 let discretes: Vec<_> = framesize.size.to_discrete().into_iter().collect();
                 for discrete in discretes {
-                    let intervals = match self.device.enum_frameintervals(
+                    let intervals = match device.enum_frameintervals(
                         desc.fourcc,
                         discrete.width,
                         discrete.height,
@@ -103,7 +207,6 @@ impl VideoSource for V4l2Source {
             }
         }
 
-        // Sort by resolution (highest first), then fps (highest first)
         formats.sort_by(|a, b| {
             let res_a = a.width * a.height;
             let res_b = b.width * b.height;
@@ -114,94 +217,113 @@ impl VideoSource for V4l2Source {
     }
 
     fn set_format(&mut self, format: &CaptureFormat) -> Result<()> {
+        if self.worker.is_some() {
+            anyhow::bail!("Cannot set_format while capture is running; call stop() first");
+        }
+
+        let device = self.ensure_device()?;
+
         let fourcc = match format.pixel_format {
             PixelFormat::Mjpeg => FourCC::new(b"MJPG"),
             PixelFormat::Yuyv => FourCC::new(b"YUYV"),
         };
 
         let v4l_fmt = V4lFormat::new(format.width, format.height, fourcc);
-        Capture::set_format(&self.device, &v4l_fmt).context("Failed to set V4L2 format")?;
+        Capture::set_format(device, &v4l_fmt).context("Failed to set V4L2 format")?;
 
-        // Set the frame interval (1/fps) to control capture rate
         let params = v4l::video::capture::Parameters::with_fps(format.fps);
-        Capture::set_params(&self.device, &params).context("Failed to set V4L2 frame interval")?;
+        Capture::set_params(device, &params).context("Failed to set V4L2 frame interval")?;
 
         self.current_format = Some(format.clone());
         Ok(())
     }
 
     fn start(&mut self) -> Result<()> {
-        // Safety: The Stream borrows the Device, but both are owned by V4l2Source.
-        // The Device will not be dropped or moved while the Stream exists because
-        // stop() drops the Stream before the Device can be dropped (V4l2Source's
-        // drop order drops fields in declaration order: device after stream would
-        // be wrong, but we ensure stream is dropped first via stop()). We also
-        // always drop the stream in stop() before any operation that could
-        // invalidate the device. The 'static lifetime is safe because we guarantee
-        // the Device outlives the Stream through the V4l2Source ownership.
-        let stream = unsafe {
-            let device_ptr: *const Device = &self.device;
-            Stream::with_buffers(&*device_ptr, BufType::VideoCapture, 4)
-                .context("Failed to create mmap stream")?
-        };
+        if self.worker.is_some() {
+            return Ok(());
+        }
 
-        // Transmute the stream lifetime from the device borrow to 'static.
-        // Safety: same reasoning as above -- V4l2Source owns both, and we
-        // always drop the stream before the device.
-        let stream: Stream<'static> = unsafe { std::mem::transmute(stream) };
+        let format = self
+            .current_format
+            .clone()
+            .context("No format set; call set_format() before capturing")?;
 
-        self.stream = Some(stream);
+        self.ensure_device()?;
+        let device = self
+            .device
+            .take()
+            .expect("ensure_device populated self.device");
+
+        // Channel depth matches the AVFoundation backend: one-frame tolerance
+        // for render stalls before capture drops, with drain-to-latest on the
+        // receiving side meaning stale frames don't accumulate.
+        let (frame_tx, frame_rx) = bounded(3);
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop_flag);
+        let worker_stats = Arc::clone(&self.stats);
+
+        let thread = std::thread::Builder::new()
+            .name("v4l2-capture".into())
+            .spawn(move || worker_loop(device, format, frame_tx, worker_stop, worker_stats))
+            .context("Failed to spawn v4l2 capture thread")?;
+
+        self.worker = Some(WorkerHandle {
+            thread: Some(thread),
+            stop_flag,
+            frame_rx,
+        });
         Ok(())
     }
 
     fn try_next_frame(&mut self) -> Result<Option<Frame>> {
-        // V4L2's mmap stream doesn't expose a non-blocking path here, so we
-        // block briefly and always return `Some`. The render loop's budget
-        // absorbs this the same way the old blocking `next_frame` did.
-        let current_format = self
-            .current_format
-            .as_ref()
-            .context("No format set; call set_format() before capturing")?;
-
-        let stream = self
-            .stream
-            .as_mut()
-            .context("Stream not started; call start() before capturing")?;
-
-        let (buf, _meta) =
-            CaptureStream::next(stream).context("Failed to capture frame from V4L2 stream")?;
-
-        let (data, width, height) = match current_format.pixel_format {
-            PixelFormat::Mjpeg => mjpeg_to_rgb(buf)?,
-            PixelFormat::Yuyv => {
-                let w = current_format.width;
-                let h = current_format.height;
-                let rgb = yuyv_to_rgb(buf, w, h);
-                (rgb, w, h)
-            }
+        let Some(worker) = self.worker.as_ref() else {
+            anyhow::bail!("Stream not started; call start() before capturing");
         };
 
-        self.stats.inc_captured();
-        Ok(Some(Frame {
-            width,
-            height,
-            data: Arc::new(data),
+        // Drain-to-latest: stale frames are user-visible latency, so discard
+        // all but the newest currently buffered.
+        let mut latest: Option<RawFrame> = None;
+        let mut dropped = 0u64;
+        loop {
+            match worker.frame_rx.try_recv() {
+                Ok(raw) => {
+                    if latest.is_some() {
+                        dropped += 1;
+                    }
+                    latest = Some(raw);
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    anyhow::bail!("V4L2 capture channel closed");
+                }
+            }
+        }
+        if dropped > 0 {
+            self.stats.add_dropped_at_render(dropped);
+        }
+
+        Ok(latest.map(|raw| Frame {
+            width: raw.width,
+            height: raw.height,
+            data: Arc::new(raw.data),
             pixel_format: FramePixelFormat::Rgb8,
-            timestamp: Instant::now(),
+            timestamp: raw.timestamp,
         }))
     }
 
     fn stop(&mut self) -> Result<()> {
-        // Drop the stream to stop capture and release mmap buffers.
-        // This must happen before the Device is dropped.
-        self.stream = None;
+        if let Some(worker) = self.worker.take() {
+            worker.shutdown();
+        }
+        // Device was moved into the worker; reopen lazily next time it's needed.
         Ok(())
     }
 }
 
 impl Drop for V4l2Source {
     fn drop(&mut self) {
-        // Ensure the stream is dropped before the device
-        self.stream = None;
+        if let Some(worker) = self.worker.take() {
+            worker.shutdown();
+        }
     }
 }
