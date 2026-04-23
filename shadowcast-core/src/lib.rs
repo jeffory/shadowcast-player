@@ -45,7 +45,10 @@ impl fmt::Display for CaptureFormat {
 pub struct Frame {
     pub width: u32,
     pub height: u32,
-    pub data: Vec<u8>,
+    /// Pixel buffer shared via `Arc` so the host can fan out frames to the
+    /// renderer / recorder / plugins with a refcount bump instead of cloning
+    /// the whole buffer (≈8 MB at 1080p BGRA) on every frame.
+    pub data: Arc<Vec<u8>>,
     pub timestamp: Instant,
 }
 
@@ -135,7 +138,7 @@ mod tests {
         let frame = Arc::new(Frame {
             width: 1920,
             height: 1080,
-            data: vec![0u8; 1920 * 1080 * 3],
+            data: Arc::new(vec![0u8; 1920 * 1080 * 3]),
             timestamp: Instant::now(),
         });
         frame_tx.send(frame).unwrap();

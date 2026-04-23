@@ -75,7 +75,7 @@ mod tests {
             let frame = Arc::new(Frame {
                 width: 320,
                 height: 240,
-                data: vec![0u8; 320 * 240 * 3],
+                data: Arc::new(vec![0u8; 320 * 240 * 3]),
                 timestamp: Instant::now(),
             });
             frame_tx.send(frame).unwrap();

@@ -635,7 +635,7 @@ impl ApplicationHandler for App {
                                 let plugin_frame = Arc::new(PluginFrame {
                                     width: frame.width,
                                     height: frame.height,
-                                    data: frame.data.to_vec(),
+                                    data: Arc::clone(&frame.data),
                                     timestamp: frame.timestamp,
                                 });
                                 host.distribute_frame(plugin_frame);
