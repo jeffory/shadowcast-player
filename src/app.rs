@@ -3,6 +3,8 @@ use std::time::Instant;
 
 use crossbeam_channel::Sender;
 use winit::application::ApplicationHandler;
+
+use crate::stats::{FrameStats, StatsSnapshot, StatsTicker};
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
@@ -13,7 +15,7 @@ use shadowcast_core::{AppCommand as PluginCommand, AppEvent, Frame as PluginFram
 
 use crate::capture::audio::{AudioSampleReceiver, AudioSource, CpalAudioSource};
 use crate::capture::device;
-use crate::capture::format::CaptureFormat;
+use crate::capture::format::{CaptureFormat, FramePixelFormat};
 use crate::capture::video::{PlatformVideoSource, VideoSource};
 use crate::config::AppConfig;
 use crate::plugin::PluginHost;
@@ -25,12 +27,29 @@ use crate::render::overlay::Toolbar;
 /// Number of consecutive frame errors before considering the source disconnected.
 const DISCONNECT_THRESHOLD: u32 = 30;
 
+/// Number of consecutive redraws that `try_next_frame` returned `None` before
+/// we treat the source as silently dead. At 60 fps request_redraw cadence this
+/// is ~2 seconds — comfortably longer than any USB/AVFoundation hiccup, short
+/// enough that the reconnect flow kicks in before the user gets annoyed.
+const NO_FRAME_DISCONNECT_THRESHOLD: u32 = 120;
+
 /// How often to attempt reconnection when the source is disconnected.
 const RECONNECT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// How often to retry audio when video is connected but audio isn't.
-/// USB audio devices (UAC) often take longer to register than video (UVC).
-const AUDIO_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+/// Retry interval for audio reconnection. Starts at 2s to catch USB audio
+/// (UAC) devices that register a few seconds after the video (UVC) device,
+/// then backs off so a missing-audio scenario doesn't stall the render thread
+/// every 2 seconds forever. `CpalAudioSource::start` enumerates CoreAudio
+/// devices and builds input+output streams, which can take 50-200ms — doing
+/// that on a fixed 2s cadence is visible as a periodic frame drop.
+fn audio_retry_interval(failure_count: u32) -> std::time::Duration {
+    match failure_count {
+        0..=1 => std::time::Duration::from_secs(2),
+        2 => std::time::Duration::from_secs(4),
+        3 => std::time::Duration::from_secs(8),
+        _ => std::time::Duration::from_secs(30),
+    }
+}
 
 pub struct App {
     window: Option<Arc<Window>>,
@@ -41,24 +60,31 @@ pub struct App {
     video_source: Option<PlatformVideoSource>,
     audio_source: Option<CpalAudioSource>,
     encoder: Option<FfmpegEncoder>,
-    video_frame_tx: Option<Sender<Vec<u8>>>,
+    video_frame_tx: Option<Sender<Arc<Vec<u8>>>>,
     toolbar: Toolbar,
     formats: Vec<CaptureFormat>,
     modifiers: ModifiersState,
-    last_frame_rgb: Option<Vec<u8>>,
+    last_frame_data: Option<Arc<Vec<u8>>>,
     last_frame_width: u32,
     last_frame_height: u32,
+    last_frame_format: FramePixelFormat,
     source_error_count: u32,
+    no_frame_count: u32,
     source_connected: bool,
     audio_connected: bool,
     last_reconnect_attempt: Option<Instant>,
     last_audio_retry: Option<Instant>,
+    audio_retry_failures: u32,
     /// Cached audio device name candidates for retry.
     audio_names: Vec<String>,
     #[allow(dead_code)]
     config: AppConfig,
     plugin_host: Option<PluginHost>,
     quit_requested: bool,
+    stats: Arc<FrameStats>,
+    stats_ticker: StatsTicker,
+    last_stats_snapshot: Option<StatsSnapshot>,
+    stats_enabled: bool,
 }
 
 impl Drop for App {
@@ -93,23 +119,30 @@ impl App {
             toolbar: Toolbar::new(),
             formats: Vec::new(),
             modifiers: ModifiersState::empty(),
-            last_frame_rgb: None,
+            last_frame_data: None,
             last_frame_width: 0,
             last_frame_height: 0,
+            last_frame_format: FramePixelFormat::Rgb8,
             source_error_count: 0,
+            no_frame_count: 0,
             source_connected: false,
             audio_connected: false,
             last_reconnect_attempt: None,
             last_audio_retry: None,
+            audio_retry_failures: 0,
             audio_names: Vec::new(),
             config: AppConfig::load(),
             plugin_host: None,
             quit_requested: false,
+            stats: Arc::new(FrameStats::default()),
+            stats_ticker: StatsTicker::new(),
+            last_stats_snapshot: None,
+            stats_enabled: false,
         }
     }
 
     fn start_recording(&mut self) {
-        let (tx, rx) = crossbeam_channel::bounded(4);
+        let (tx, rx) = crossbeam_channel::bounded::<Arc<Vec<u8>>>(4);
         self.video_frame_tx = Some(tx);
 
         let audio_rx = self
@@ -133,6 +166,7 @@ impl App {
                 fps: fmt.fps,
                 audio_sample_rate: 48000,
                 audio_channels: 2,
+                input_format: self.last_frame_format,
             };
 
             let mut encoder = FfmpegEncoder::new();
@@ -225,6 +259,7 @@ impl App {
                 log::info!("Audio connected");
                 self.audio_source = Some(audio);
                 self.audio_connected = true;
+                self.audio_retry_failures = 0;
                 true
             }
             Err(e) => {
@@ -235,15 +270,26 @@ impl App {
     }
 
     /// Retries audio connection when video is connected but audio isn't.
-    /// USB audio devices often register later than video on Linux.
+    /// USB audio devices often register later than video, so we retry quickly
+    /// at first, then back off — stream construction on CoreAudio is heavy
+    /// enough to show up as a visible frame hitch if done every 2s.
     fn try_reconnect_audio(&mut self) {
+        let interval = audio_retry_interval(self.audio_retry_failures);
         if let Some(last) = self.last_audio_retry {
-            if last.elapsed() < AUDIO_RETRY_INTERVAL {
+            if last.elapsed() < interval {
                 return;
             }
         }
         self.last_audio_retry = Some(Instant::now());
-        self.try_start_audio();
+        let before = self.audio_retry_failures;
+        if !self.try_start_audio() {
+            self.audio_retry_failures = self.audio_retry_failures.saturating_add(1);
+            if before < 4 && self.audio_retry_failures >= 4 {
+                log::info!(
+                    "Audio device not found after several attempts; retrying every 30s"
+                );
+            }
+        }
     }
 
     /// Attempts to rediscover and reopen the video (and audio) capture device.
@@ -268,7 +314,7 @@ impl App {
             video_path
         );
 
-        match PlatformVideoSource::new(video_path) {
+        match PlatformVideoSource::new(video_path, self.stats.clone()) {
             Ok(mut source) => {
                 self.formats = source.supported_formats();
 
@@ -372,7 +418,7 @@ impl ApplicationHandler for App {
         // Initialize video capture
         let video_path = capture_device.as_ref().map(|d| d.video_path.as_str());
 
-        match video_path.map(PlatformVideoSource::new) {
+        match video_path.map(|p| PlatformVideoSource::new(p, self.stats.clone())) {
             None => {
                 log::info!("No capture device found, will retry on reconnect");
                 self.source_connected = false;
@@ -526,12 +572,23 @@ impl ApplicationHandler for App {
                             window.set_fullscreen(fullscreen);
                         }
                     }
+                    Key::Named(NamedKey::F12) => {
+                        self.stats_enabled = !self.stats_enabled;
+                        log::info!(
+                            "Frame stats overlay {}",
+                            if self.stats_enabled { "enabled" } else { "disabled" }
+                        );
+                        if !self.stats_enabled {
+                            self.last_stats_snapshot = None;
+                        }
+                    }
                     Key::Character(c) if ctrl && c == "s" => {
-                        if let Some(rgb) = &self.last_frame_rgb {
+                        if let Some(data) = &self.last_frame_data {
                             take_screenshot(
-                                rgb.clone(),
+                                (**data).clone(),
                                 self.last_frame_width,
                                 self.last_frame_height,
+                                self.last_frame_format,
                             );
                         }
                     }
@@ -551,6 +608,8 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::RedrawRequested => {
+                let frame_start = Instant::now();
+
                 // 1. Get next video frame, or try to reconnect
                 if !self.source_connected {
                     self.try_reconnect();
@@ -559,15 +618,17 @@ impl ApplicationHandler for App {
                 }
 
                 if let Some(video) = &mut self.video_source {
-                    match video.next_frame() {
-                        Ok(frame) => {
+                    match video.try_next_frame() {
+                        Ok(Some(frame)) => {
                             self.source_error_count = 0;
+                            self.no_frame_count = 0;
                             if !self.source_connected {
                                 self.source_connected = true;
                                 log::info!("Video source recovered");
                             }
                             self.last_frame_width = frame.width;
                             self.last_frame_height = frame.height;
+                            self.last_frame_format = frame.pixel_format;
 
                             // Distribute frame to plugins
                             if let Some(host) = &self.plugin_host {
@@ -581,16 +642,47 @@ impl ApplicationHandler for App {
                             }
 
                             // Send to encoder if recording
+                            // Send to encoder if recording. `Arc::clone` is a
+                            // refcount bump, not a buffer copy.
                             if let Some(tx) = &self.video_frame_tx {
-                                let _ = tx.try_send(frame.data.clone());
+                                let _ = tx.try_send(Arc::clone(&frame.data));
                             }
 
                             // Upload to renderer
                             if let Some(renderer) = &mut self.renderer {
-                                renderer.upload_frame(&frame.data, frame.width, frame.height);
+                                renderer.upload_frame(
+                                    &frame.data,
+                                    frame.width,
+                                    frame.height,
+                                    frame.pixel_format,
+                                );
                             }
 
-                            self.last_frame_rgb = Some(frame.data);
+                            self.last_frame_data = Some(frame.data);
+                        }
+                        Ok(None) => {
+                            // No new frame since last redraw — re-present the
+                            // previously uploaded texture so vsync cadence is
+                            // preserved and a capture hitch doesn't show up
+                            // as a peak-frame-time spike.
+                            self.stats.inc_recv_stalled();
+                            self.no_frame_count = self.no_frame_count.saturating_add(1);
+                            if self.no_frame_count >= NO_FRAME_DISCONNECT_THRESHOLD
+                                && self.source_connected
+                            {
+                                log::warn!(
+                                    "Video source silent for {} redraws; treating as disconnected",
+                                    self.no_frame_count
+                                );
+                                self.source_connected = false;
+                                self.audio_connected = false;
+                                self.video_source = None;
+                                if let Some(renderer) = &mut self.renderer {
+                                    renderer.clear_frame();
+                                }
+                                self.last_frame_data = None;
+                                self.no_frame_count = 0;
+                            }
                         }
                         Err(e) => {
                             self.source_error_count += 1;
@@ -611,7 +703,7 @@ impl ApplicationHandler for App {
                                 if let Some(renderer) = &mut self.renderer {
                                     renderer.clear_frame();
                                 }
-                                self.last_frame_rgb = None;
+                                self.last_frame_data = None;
                             } else if self.source_error_count == 1 {
                                 log::warn!("Frame capture error: {}", e);
                             } else {
@@ -633,8 +725,13 @@ impl ApplicationHandler for App {
 
                 if self.toolbar.screenshot_requested {
                     self.toolbar.screenshot_requested = false;
-                    if let Some(rgb) = &self.last_frame_rgb {
-                        take_screenshot(rgb.clone(), self.last_frame_width, self.last_frame_height);
+                    if let Some(data) = &self.last_frame_data {
+                        take_screenshot(
+                            (**data).clone(),
+                            self.last_frame_width,
+                            self.last_frame_height,
+                            self.last_frame_format,
+                        );
                     }
                 }
 
@@ -741,95 +838,190 @@ impl ApplicationHandler for App {
                     }
                 };
 
-                // Run egui
-                let egui_state = self.egui_state.as_mut().unwrap();
-                let egui_renderer = self.egui_renderer.as_mut().unwrap();
+                // Decide whether egui has anything to draw this frame.
+                // When the source is connected and neither the toolbar nor the
+                // stats overlay is visible, we can skip the entire egui
+                // context run + tessellate + extra render pass, which is
+                // worth ~1-3 ms per frame on a 60 Hz timeline.
+                self.toolbar.tick();
+                let needs_egui =
+                    !self.source_connected || self.toolbar.visible || self.stats_enabled;
 
-                let source_connected = self.source_connected;
-                let raw_input = egui_state.take_egui_input(window);
-                let full_output = self.egui_ctx.run(raw_input, |ctx| {
-                    if !source_connected {
-                        egui::Area::new(egui::Id::new("disconnected_overlay"))
-                            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                            .order(egui::Order::Background)
-                            .show(ctx, |ui| {
-                                ui.vertical_centered(|ui| {
-                                    ui.add_space(4.0);
-                                    ui.label(
-                                        egui::RichText::new("Source disconnected")
-                                            .size(24.0)
-                                            .color(egui::Color32::from_gray(160)),
-                                    );
-                                    ui.add_space(4.0);
-                                    ui.label(
-                                        egui::RichText::new("Connect a capture device to begin")
+                if needs_egui {
+                    let egui_state = self.egui_state.as_mut().unwrap();
+                    let egui_renderer = self.egui_renderer.as_mut().unwrap();
+
+                    let source_connected = self.source_connected;
+                    let stats_enabled = self.stats_enabled;
+                    let stats_snapshot = self.last_stats_snapshot;
+                    let raw_input = egui_state.take_egui_input(window);
+                    let full_output = self.egui_ctx.run(raw_input, |ctx| {
+                        if !source_connected {
+                            egui::Area::new(egui::Id::new("disconnected_overlay"))
+                                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                                .order(egui::Order::Background)
+                                .show(ctx, |ui| {
+                                    ui.vertical_centered(|ui| {
+                                        ui.add_space(4.0);
+                                        ui.label(
+                                            egui::RichText::new("Source disconnected")
+                                                .size(24.0)
+                                                .color(egui::Color32::from_gray(160)),
+                                        );
+                                        ui.add_space(4.0);
+                                        ui.label(
+                                            egui::RichText::new(
+                                                "Connect a capture device to begin",
+                                            )
                                             .size(14.0)
                                             .color(egui::Color32::from_gray(100)),
-                                    );
-                                    ui.add_space(4.0);
+                                        );
+                                        ui.add_space(4.0);
+                                    });
                                 });
-                            });
-                    }
-                    self.toolbar.ui(ctx, &self.formats);
-                });
-                egui_state.handle_platform_output(window, full_output.platform_output);
-
-                let clipped = self
-                    .egui_ctx
-                    .tessellate(full_output.shapes, full_output.pixels_per_point);
-                let screen_desc = egui_wgpu::ScreenDescriptor {
-                    size_in_pixels: [
-                        renderer.surface_config.width,
-                        renderer.surface_config.height,
-                    ],
-                    pixels_per_point: full_output.pixels_per_point,
-                };
-
-                // Update egui textures
-                for (id, delta) in &full_output.textures_delta.set {
-                    egui_renderer.update_texture(&renderer.device, &renderer.queue, *id, delta);
-                }
-
-                egui_renderer.update_buffers(
-                    &renderer.device,
-                    &renderer.queue,
-                    &mut encoder,
-                    &clipped,
-                    &screen_desc,
-                );
-
-                // Render egui on top of video
-                let view = output.texture.create_view(&Default::default());
-                {
-                    let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("egui pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &view,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Load,
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        ..Default::default()
+                        }
+                        self.toolbar.ui(ctx, &self.formats);
+                        if stats_enabled {
+                            draw_stats_overlay(ctx, stats_snapshot);
+                        }
                     });
-                    let mut render_pass = render_pass.forget_lifetime();
-                    egui_renderer.render(&mut render_pass, &clipped, &screen_desc);
-                }
+                    egui_state.handle_platform_output(window, full_output.platform_output);
 
-                // Free egui textures
-                for id in &full_output.textures_delta.free {
-                    egui_renderer.free_texture(id);
+                    let clipped = self
+                        .egui_ctx
+                        .tessellate(full_output.shapes, full_output.pixels_per_point);
+                    let screen_desc = egui_wgpu::ScreenDescriptor {
+                        size_in_pixels: [
+                            renderer.surface_config.width,
+                            renderer.surface_config.height,
+                        ],
+                        pixels_per_point: full_output.pixels_per_point,
+                    };
+
+                    // Update egui textures
+                    for (id, delta) in &full_output.textures_delta.set {
+                        egui_renderer.update_texture(&renderer.device, &renderer.queue, *id, delta);
+                    }
+
+                    egui_renderer.update_buffers(
+                        &renderer.device,
+                        &renderer.queue,
+                        &mut encoder,
+                        &clipped,
+                        &screen_desc,
+                    );
+
+                    // Render egui on top of video
+                    let view = output.texture.create_view(&Default::default());
+                    {
+                        let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("egui pass"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &view,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Load,
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            ..Default::default()
+                        });
+                        let mut render_pass = render_pass.forget_lifetime();
+                        egui_renderer.render(&mut render_pass, &clipped, &screen_desc);
+                    }
+
+                    // Free egui textures
+                    for id in &full_output.textures_delta.free {
+                        egui_renderer.free_texture(id);
+                    }
                 }
 
                 renderer.queue.submit(std::iter::once(encoder.finish()));
                 output.present();
 
-                // 5. Request next redraw
+                // 5. Stats bookkeeping
+                self.stats.inc_rendered();
+                self.stats
+                    .record_frame_us(frame_start.elapsed().as_micros() as u64);
+                // Always tick so the counter deltas stay aligned, but only
+                // surface (log / display) when the overlay is enabled.
+                if let Some(snap) = self.stats_ticker.tick(&self.stats) {
+                    if self.stats_enabled {
+                        log::info!("frame stats: {}", snap.summary());
+                        self.last_stats_snapshot = Some(snap);
+                    }
+                }
+
+                // 6. Request next redraw
                 window.request_redraw();
             }
 
             _ => {}
         }
     }
+}
+
+/// Draw the frame-stats overlay at the top-left corner. Toggled with F12.
+fn draw_stats_overlay(ctx: &egui::Context, snapshot: Option<StatsSnapshot>) {
+    egui::Area::new(egui::Id::new("frame_stats_overlay"))
+        .anchor(egui::Align2::LEFT_TOP, egui::vec2(8.0, 8.0))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180))
+                .inner_margin(egui::Margin::symmetric(8, 6))
+                .corner_radius(4.0)
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    let label = |text: String| {
+                        egui::RichText::new(text)
+                            .monospace()
+                            .size(12.0)
+                            .color(egui::Color32::from_gray(220))
+                    };
+                    match snapshot {
+                        None => {
+                            ui.label(label("frame stats: collecting…".to_string()));
+                        }
+                        Some(s) => {
+                            let peak_ms = s.peak_frame_us as f64 / 1000.0;
+                            let peak_color = if peak_ms > 25.0 {
+                                egui::Color32::from_rgb(255, 120, 120)
+                            } else if peak_ms > 18.0 {
+                                egui::Color32::from_rgb(240, 200, 120)
+                            } else {
+                                egui::Color32::from_gray(220)
+                            };
+                            let drop_color = if s.dropped_per_sec > 0 {
+                                egui::Color32::from_rgb(255, 120, 120)
+                            } else {
+                                egui::Color32::from_gray(220)
+                            };
+                            ui.label(label(format!(
+                                "captured {}/s   rendered {}/s",
+                                s.captured_per_sec, s.rendered_per_sec
+                            )));
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "dropped at capture {}/s",
+                                    s.dropped_per_sec
+                                ))
+                                .monospace()
+                                .size(12.0)
+                                .color(drop_color),
+                            );
+                            ui.label(label(format!(
+                                "dropped at render {}/s",
+                                s.dropped_at_render_per_sec
+                            )));
+                            ui.label(
+                                egui::RichText::new(format!("peak frame {:.2} ms", peak_ms))
+                                    .monospace()
+                                    .size(12.0)
+                                    .color(peak_color),
+                            );
+                        }
+                    }
+                });
+        });
 }

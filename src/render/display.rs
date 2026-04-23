@@ -3,6 +3,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use winit::window::Window;
 
+use crate::capture::format::FramePixelFormat;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScaleMode {
     Fit,
@@ -49,6 +51,7 @@ pub struct DisplayRenderer {
     pub bind_group: Option<wgpu::BindGroup>,
     pub texture_width: u32,
     pub texture_height: u32,
+    texture_format: wgpu::TextureFormat,
     pub uniform_buffer: wgpu::Buffer,
     pub uniform_bind_group: wgpu::BindGroup,
     _uniform_bind_group_layout: wgpu::BindGroupLayout,
@@ -104,7 +107,11 @@ impl DisplayRenderer {
             present_mode: wgpu::PresentMode::AutoVsync,
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            // One frame in flight instead of two: removes ~one vsync interval
+            // (~16 ms at 60 Hz) of added end-to-end display latency. The extra
+            // pipelining headroom isn't needed for a single fullscreen textured
+            // quad + egui overlay on modern GPUs.
+            desired_maximum_frame_latency: 1,
         };
         surface.configure(&device, &surface_config);
 
@@ -240,6 +247,7 @@ impl DisplayRenderer {
             bind_group: None,
             texture_width: 0,
             texture_height: 0,
+            texture_format: wgpu::TextureFormat::Bgra8UnormSrgb,
             uniform_buffer,
             uniform_bind_group,
             _uniform_bind_group_layout: uniform_bind_group_layout,
@@ -253,45 +261,83 @@ impl DisplayRenderer {
         self.texture_view = None;
     }
 
-    pub fn upload_frame(&mut self, rgb_data: &[u8], width: u32, height: u32) {
-        if self.texture.is_none() || self.texture_width != width || self.texture_height != height {
-            self.create_texture(width, height);
+    pub fn upload_frame(
+        &mut self,
+        data: &[u8],
+        width: u32,
+        height: u32,
+        format: FramePixelFormat,
+    ) {
+        let target_format = match format {
+            FramePixelFormat::Bgra8 => wgpu::TextureFormat::Bgra8UnormSrgb,
+            FramePixelFormat::Rgb8 => wgpu::TextureFormat::Rgba8UnormSrgb,
+        };
+
+        if self.texture.is_none()
+            || self.texture_width != width
+            || self.texture_height != height
+            || self.texture_format != target_format
+        {
+            self.create_texture(width, height, target_format);
         }
 
-        // Convert RGB24 to RGBA32
-        let pixel_count = (width * height) as usize;
-        let mut rgba_data = Vec::with_capacity(pixel_count * 4);
-        for pixel in rgb_data.chunks_exact(3) {
-            rgba_data.push(pixel[0]);
-            rgba_data.push(pixel[1]);
-            rgba_data.push(pixel[2]);
-            rgba_data.push(255);
-        }
+        let Some(texture) = &self.texture else {
+            return;
+        };
 
-        if let Some(texture) = &self.texture {
-            self.queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &rgba_data,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(4 * width),
-                    rows_per_image: Some(height),
-                },
-                wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-            );
+        let copy = wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        };
+        let extent = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+
+        match format {
+            FramePixelFormat::Bgra8 => {
+                // Zero-copy upload: source and texture formats match.
+                self.queue.write_texture(
+                    copy,
+                    data,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * width),
+                        rows_per_image: Some(height),
+                    },
+                    extent,
+                );
+            }
+            FramePixelFormat::Rgb8 => {
+                // wgpu has no 24-bit RGB surface format, so expand to RGBA on
+                // the CPU. This path is only hit on Linux/Windows where the
+                // source already went through an MJPEG/YUYV decode on the CPU.
+                let pixel_count = (width * height) as usize;
+                let mut rgba_data = Vec::with_capacity(pixel_count * 4);
+                for pixel in data.chunks_exact(3) {
+                    rgba_data.push(pixel[0]);
+                    rgba_data.push(pixel[1]);
+                    rgba_data.push(pixel[2]);
+                    rgba_data.push(255);
+                }
+                self.queue.write_texture(
+                    copy,
+                    &rgba_data,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * width),
+                        rows_per_image: Some(height),
+                    },
+                    extent,
+                );
+            }
         }
     }
 
-    fn create_texture(&mut self, width: u32, height: u32) {
+    fn create_texture(&mut self, width: u32, height: u32, format: wgpu::TextureFormat) {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("video texture"),
             size: wgpu::Extent3d {
@@ -302,7 +348,7 @@ impl DisplayRenderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -329,6 +375,7 @@ impl DisplayRenderer {
         self.bind_group = Some(bind_group);
         self.texture_width = width;
         self.texture_height = height;
+        self.texture_format = format;
     }
 
     pub fn set_scale_mode(&self, mode: ScaleMode, video_w: u32, video_h: u32) {

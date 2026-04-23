@@ -1,3 +1,4 @@
+use shadowcast_player::capture::format::FramePixelFormat;
 use shadowcast_player::record::encoder::{recording_path, EncoderConfig};
 
 #[test]
@@ -17,6 +18,7 @@ fn test_encoder_config_defaults() {
         fps: 60,
         audio_sample_rate: 48000,
         audio_channels: 2,
+        input_format: FramePixelFormat::Rgb8,
     };
     assert_eq!(config.width, 1920);
     assert_eq!(config.fps, 60);

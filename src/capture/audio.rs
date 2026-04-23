@@ -3,10 +3,63 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{SampleRate, Stream, StreamConfig};
+use cpal::{SampleFormat, SampleRate, Stream, StreamConfig, SupportedStreamConfig};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::HeapRb;
+
+/// Convert an f32 sample in [-1.0, 1.0] to i16, clamping out-of-range values.
+#[inline]
+fn f32_to_i16(s: f32) -> i16 {
+    (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
+}
+
+/// Convert an i16 sample to f32 in [-1.0, 1.0].
+#[inline]
+fn i16_to_f32(s: i16) -> f32 {
+    s as f32 / -(i16::MIN as f32)
+}
+
+/// Pick a supported input config for the given device, preferring 48kHz stereo
+/// (what the encoder expects) and falling back to the device's default.
+fn pick_input_config(device: &cpal::Device) -> Result<SupportedStreamConfig> {
+    let target_rate = SampleRate(48000);
+    if let Ok(ranges) = device.supported_input_configs() {
+        for range in ranges {
+            if range.channels() == 2
+                && range.min_sample_rate() <= target_rate
+                && range.max_sample_rate() >= target_rate
+            {
+                return Ok(range.with_sample_rate(target_rate));
+            }
+        }
+    }
+    device
+        .default_input_config()
+        .context("Failed to query default input config")
+}
+
+/// Pick a supported output config for the given device matching (rate, channels)
+/// if possible, otherwise the device's default.
+fn pick_output_config(
+    device: &cpal::Device,
+    rate: SampleRate,
+    channels: u16,
+) -> Result<SupportedStreamConfig> {
+    if let Ok(ranges) = device.supported_output_configs() {
+        for range in ranges {
+            if range.channels() == channels
+                && range.min_sample_rate() <= rate
+                && range.max_sample_rate() >= rate
+            {
+                return Ok(range.with_sample_rate(rate));
+            }
+        }
+    }
+    device
+        .default_output_config()
+        .context("Failed to query default output config")
+}
 
 /// Scales audio samples by the given volume factor, clamping to i16 range.
 pub fn scale_volume(samples: &[i16], volume: f32) -> Vec<i16> {
@@ -131,81 +184,150 @@ impl AudioSource for CpalAudioSource {
             self.device_names
         ))?;
 
+        // Probe the device for a config it actually supports. On macOS,
+        // CoreAudio typically exposes capture devices as f32 only, so
+        // hardcoding i16 fails with "stream configuration not supported".
+        let input_supported =
+            pick_input_config(input_device).context("No compatible input config")?;
+        let input_sample_format = input_supported.sample_format();
+        let input_config: StreamConfig = input_supported.into();
+
         log::info!(
-            "Using audio input device: {}",
-            input_device.name().unwrap_or_default()
+            "Using audio input device: {} @ {}Hz, {}ch, {:?}",
+            input_device.name().unwrap_or_default(),
+            input_config.sample_rate.0,
+            input_config.channels,
+            input_sample_format
         );
 
-        // Configure 48kHz stereo i16. Let ALSA/PipeWire choose the buffer size —
-        // not all devices (especially sysdefault: on PipeWire) support a fixed
-        // period size via snd_pcm_hw_params_set_buffer_size.
-        let config = StreamConfig {
-            channels: 2,
-            sample_rate: SampleRate(48000),
-            buffer_size: cpal::BufferSize::Default,
-        };
+        if input_config.sample_rate.0 != 48000 {
+            log::warn!(
+                "Input running at {}Hz; encoder expects 48000Hz. Recording audio \
+                 may be pitch-shifted until resampling is added.",
+                input_config.sample_rate.0
+            );
+        }
 
         // Ring buffer for passing audio from input to output (~100ms at 48kHz stereo)
         let ring = HeapRb::<i16>::new(9600);
         let (mut producer, mut consumer) = ring.split();
 
-        let volume = Arc::clone(&self.volume);
-        let recording = Arc::clone(&self.recording);
-        let sender = self.sender.clone();
-
-        // Input stream: capture samples, scale volume, push to ring buffer + channel
-        let input_stream = input_device
-            .build_input_stream(
-                &config,
-                move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                    let vol = f32::from_bits(volume.load(Ordering::Relaxed));
-                    let scaled = scale_volume(data, vol);
-
-                    // Push to ring buffer for live playback (drop oldest if full)
-                    for &sample in &scaled {
-                        let _ = producer.try_push(sample);
-                    }
-
-                    // Send to encoder channel if recording
-                    if recording.load(Ordering::Relaxed) {
-                        let _ = sender.try_send(scaled);
-                    }
-                },
-                |err| {
-                    log::error!("Audio input stream error: {}", err);
-                },
-                None,
-            )
-            .context("Failed to build audio input stream")?;
+        let err_fn = |err| log::error!("Audio input stream error: {}", err);
+        let input_stream = match input_sample_format {
+            SampleFormat::I16 => {
+                let volume = Arc::clone(&self.volume);
+                let recording = Arc::clone(&self.recording);
+                let sender = self.sender.clone();
+                input_device
+                    .build_input_stream(
+                        &input_config,
+                        move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                            let vol = f32::from_bits(volume.load(Ordering::Relaxed));
+                            let scaled = scale_volume(data, vol);
+                            for &s in &scaled {
+                                let _ = producer.try_push(s);
+                            }
+                            if recording.load(Ordering::Relaxed) {
+                                let _ = sender.try_send(scaled);
+                            }
+                        },
+                        err_fn,
+                        None,
+                    )
+                    .context("Failed to build audio input stream")?
+            }
+            SampleFormat::F32 => {
+                let volume = Arc::clone(&self.volume);
+                let recording = Arc::clone(&self.recording);
+                let sender = self.sender.clone();
+                input_device
+                    .build_input_stream(
+                        &input_config,
+                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                            let vol = f32::from_bits(volume.load(Ordering::Relaxed));
+                            let mut scaled: Vec<i16> = Vec::with_capacity(data.len());
+                            for &f in data {
+                                let s = f32_to_i16(f);
+                                let v = ((s as f32 * vol).round())
+                                    .clamp(i16::MIN as f32, i16::MAX as f32)
+                                    as i16;
+                                scaled.push(v);
+                            }
+                            for &s in &scaled {
+                                let _ = producer.try_push(s);
+                            }
+                            if recording.load(Ordering::Relaxed) {
+                                let _ = sender.try_send(scaled);
+                            }
+                        },
+                        err_fn,
+                        None,
+                    )
+                    .context("Failed to build audio input stream")?
+            }
+            other => {
+                anyhow::bail!("Unsupported audio input sample format: {:?}", other);
+            }
+        };
 
         input_stream
             .play()
             .context("Failed to start audio input stream")?;
 
-        // Output stream: read from ring buffer for live monitoring
+        // Output stream: read from ring buffer for live monitoring. The output
+        // device may use a different native sample format than the input, and
+        // default outputs on macOS are usually f32.
         let output_device = host
             .default_output_device()
             .context("No default output device found")?;
 
+        let output_supported = pick_output_config(
+            &output_device,
+            input_config.sample_rate,
+            input_config.channels,
+        )
+        .context("No compatible output config")?;
+        let output_sample_format = output_supported.sample_format();
+        let output_config: StreamConfig = output_supported.into();
+
         log::info!(
-            "Using audio output device: {}",
-            output_device.name().unwrap_or_default()
+            "Using audio output device: {} @ {}Hz, {}ch, {:?}",
+            output_device.name().unwrap_or_default(),
+            output_config.sample_rate.0,
+            output_config.channels,
+            output_sample_format
         );
 
-        let output_stream = output_device
-            .build_output_stream(
-                &config,
-                move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
-                    for sample in data.iter_mut() {
-                        *sample = consumer.try_pop().unwrap_or(0);
-                    }
-                },
-                |err| {
-                    log::error!("Audio output stream error: {}", err);
-                },
-                None,
-            )
-            .context("Failed to build audio output stream")?;
+        let out_err_fn = |err| log::error!("Audio output stream error: {}", err);
+        let output_stream = match output_sample_format {
+            SampleFormat::I16 => output_device
+                .build_output_stream(
+                    &output_config,
+                    move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+                        for sample in data.iter_mut() {
+                            *sample = consumer.try_pop().unwrap_or(0);
+                        }
+                    },
+                    out_err_fn,
+                    None,
+                )
+                .context("Failed to build audio output stream")?,
+            SampleFormat::F32 => output_device
+                .build_output_stream(
+                    &output_config,
+                    move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                        for sample in data.iter_mut() {
+                            *sample = i16_to_f32(consumer.try_pop().unwrap_or(0));
+                        }
+                    },
+                    out_err_fn,
+                    None,
+                )
+                .context("Failed to build audio output stream")?,
+            other => {
+                anyhow::bail!("Unsupported audio output sample format: {:?}", other);
+            }
+        };
 
         output_stream
             .play()

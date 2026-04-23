@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -13,7 +14,8 @@ use windows::Win32::Media::MediaFoundation::{
 };
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
-use crate::capture::format::{CaptureFormat, Frame, PixelFormat};
+use crate::capture::format::{CaptureFormat, Frame, FramePixelFormat, PixelFormat};
+use crate::stats::FrameStats;
 
 use super::VideoSource;
 
@@ -27,6 +29,7 @@ pub struct MediaFoundationSource {
     reader: IMFSourceReader,
     current_format: Option<CaptureFormat>,
     _com_initialized: ComGuard,
+    stats: Arc<FrameStats>,
 }
 
 /// RAII guard for COM initialization/shutdown.
@@ -80,7 +83,7 @@ impl MediaFoundationSource {
     ///
     /// On Windows, `device_path` is matched as a substring against
     /// the friendly name of enumerated video capture devices.
-    pub fn new(device_path: &str) -> Result<Self> {
+    pub fn new(device_path: &str, stats: Arc<FrameStats>) -> Result<Self> {
         let com_guard = init_com()?;
 
         let source = find_device(device_path)?;
@@ -100,6 +103,7 @@ impl MediaFoundationSource {
             reader,
             current_format: None,
             _com_initialized: com_guard,
+            stats,
         })
     }
 }
@@ -332,7 +336,10 @@ impl VideoSource for MediaFoundationSource {
         Ok(())
     }
 
-    fn next_frame(&mut self) -> Result<Frame> {
+    fn try_next_frame(&mut self) -> Result<Option<Frame>> {
+        // Media Foundation's `ReadSample` blocks until the next sample. We
+        // always return `Some` on success; the render loop handles this the
+        // same way the old blocking `next_frame` did.
         let current_format = self
             .current_format
             .as_ref()
@@ -376,12 +383,14 @@ impl VideoSource for MediaFoundationSource {
                 }
             };
 
-            Ok(Frame {
+            self.stats.inc_captured();
+            Ok(Some(Frame {
                 width,
                 height,
-                data,
+                data: Arc::new(data),
+                pixel_format: FramePixelFormat::Rgb8,
                 timestamp: Instant::now(),
-            })
+            }))
         }
     }
 

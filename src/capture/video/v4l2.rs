@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -9,7 +10,10 @@ use v4l::io::traits::CaptureStream;
 use v4l::video::Capture;
 use v4l::Device;
 
-use crate::capture::format::{mjpeg_to_rgb, yuyv_to_rgb, CaptureFormat, Frame, PixelFormat};
+use crate::capture::format::{
+    mjpeg_to_rgb, yuyv_to_rgb, CaptureFormat, Frame, FramePixelFormat, PixelFormat,
+};
+use crate::stats::FrameStats;
 
 use super::VideoSource;
 
@@ -18,16 +22,18 @@ pub struct V4l2Source {
     device: Device,
     stream: Option<Stream<'static>>,
     current_format: Option<CaptureFormat>,
+    stats: Arc<FrameStats>,
 }
 
 impl V4l2Source {
     /// Opens a V4L2 device at the given path (e.g. "/dev/video2").
-    pub fn new(device_path: &str) -> Result<Self> {
+    pub fn new(device_path: &str, stats: Arc<FrameStats>) -> Result<Self> {
         let device = Device::with_path(device_path).context("Failed to open V4L2 device")?;
         Ok(Self {
             device,
             stream: None,
             current_format: None,
+            stats,
         })
     }
 }
@@ -148,7 +154,10 @@ impl VideoSource for V4l2Source {
         Ok(())
     }
 
-    fn next_frame(&mut self) -> Result<Frame> {
+    fn try_next_frame(&mut self) -> Result<Option<Frame>> {
+        // V4L2's mmap stream doesn't expose a non-blocking path here, so we
+        // block briefly and always return `Some`. The render loop's budget
+        // absorbs this the same way the old blocking `next_frame` did.
         let current_format = self
             .current_format
             .as_ref()
@@ -172,12 +181,14 @@ impl VideoSource for V4l2Source {
             }
         };
 
-        Ok(Frame {
+        self.stats.inc_captured();
+        Ok(Some(Frame {
             width,
             height,
-            data,
+            data: Arc::new(data),
+            pixel_format: FramePixelFormat::Rgb8,
             timestamp: Instant::now(),
-        })
+        }))
     }
 
     fn stop(&mut self) -> Result<()> {
