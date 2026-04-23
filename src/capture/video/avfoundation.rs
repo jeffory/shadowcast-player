@@ -1,10 +1,11 @@
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use crossbeam_channel::{bounded, Receiver, Sender};
+use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass};
+use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass, Message};
 use objc2_av_foundation::{
     AVCaptureConnection, AVCaptureDevice, AVCaptureDeviceInput, AVCaptureOutput, AVCaptureSession,
     AVCaptureVideoDataOutput, AVCaptureVideoDataOutputSampleBufferDelegate, AVMediaTypeVideo,
@@ -17,7 +18,8 @@ use objc2_core_video::{
 };
 use objc2_foundation::{NSDictionary, NSNumber, NSObject, NSObjectProtocol, NSString};
 
-use crate::capture::format::{CaptureFormat, Frame, PixelFormat};
+use crate::capture::format::{CaptureFormat, Frame, FramePixelFormat, PixelFormat};
+use crate::stats::FrameStats;
 
 use super::VideoSource;
 
@@ -44,6 +46,7 @@ pub struct AvFoundationSource {
 // the AVCaptureVideoDataOutputSampleBufferDelegate protocol.
 struct FrameDelegateIvars {
     sender: Sender<RawFrame>,
+    stats: Arc<FrameStats>,
 }
 
 define_class!(
@@ -76,28 +79,39 @@ define_class!(
             let base_address = CVPixelBufferGetBaseAddress(&image_buffer);
 
             if !base_address.is_null() && width > 0 && height > 0 {
-                // Convert BGRA to RGB
+                // Pass the pixel data through as BGRA. wgpu uploads it to a
+                // Bgra8UnormSrgb texture and the GPU handles the channel
+                // swizzle — no CPU colorspace conversion.
                 let src = std::slice::from_raw_parts(
                     base_address as *const u8,
                     bytes_per_row * height as usize,
                 );
 
-                let mut rgb = Vec::with_capacity((width * height * 3) as usize);
-                for y in 0..height as usize {
-                    for x in 0..width as usize {
-                        let offset = y * bytes_per_row + x * 4;
-                        rgb.push(src[offset + 2]); // R (from BGRA)
-                        rgb.push(src[offset + 1]); // G
-                        rgb.push(src[offset]); // B
+                let tight_row = (width as usize) * 4;
+                let mut bgra = Vec::with_capacity(tight_row * height as usize);
+                if bytes_per_row == tight_row {
+                    bgra.extend_from_slice(&src[..tight_row * height as usize]);
+                } else {
+                    // CVPixelBuffer rows can be padded for alignment; drop the
+                    // padding so downstream sees a tightly-packed buffer.
+                    for y in 0..height as usize {
+                        let src_offset = y * bytes_per_row;
+                        bgra.extend_from_slice(&src[src_offset..src_offset + tight_row]);
                     }
                 }
 
-                let _ = self.ivars().sender.try_send(RawFrame {
-                    data: rgb,
+                self.ivars().stats.inc_captured();
+                match self.ivars().sender.try_send(RawFrame {
+                    data: bgra,
                     width,
                     height,
                     timestamp: Instant::now(),
-                });
+                }) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                        self.ivars().stats.inc_dropped_at_capture();
+                    }
+                }
             }
 
             CVPixelBufferUnlockBaseAddress(&image_buffer, CVPixelBufferLockFlags(0));
@@ -106,8 +120,8 @@ define_class!(
 );
 
 impl FrameDelegate {
-    fn new(sender: Sender<RawFrame>) -> Retained<Self> {
-        let this = Self::alloc().set_ivars(FrameDelegateIvars { sender });
+    fn new(sender: Sender<RawFrame>, stats: Arc<FrameStats>) -> Retained<Self> {
+        let this = Self::alloc().set_ivars(FrameDelegateIvars { sender, stats });
         unsafe { msg_send![super(this), init] }
     }
 }
@@ -117,7 +131,7 @@ impl AvFoundationSource {
     ///
     /// On macOS, `device_path` is the AVCaptureDevice unique ID string
     /// or a substring to match against the device's localized name.
-    pub fn new(device_path: &str) -> Result<Self> {
+    pub fn new(device_path: &str, stats: Arc<FrameStats>) -> Result<Self> {
         let device = find_device(device_path).context(format!(
             "No video capture device found matching '{}'",
             device_path
@@ -150,7 +164,7 @@ impl AvFoundationSource {
 
         // Set up the delegate with a serial dispatch queue
         let (frame_tx, frame_rx) = bounded(2);
-        let delegate = FrameDelegate::new(frame_tx);
+        let delegate = FrameDelegate::new(frame_tx, stats);
 
         let queue = dispatch2::DispatchQueue::new("com.shadowcast-player.video-capture", None);
         unsafe {
@@ -263,27 +277,38 @@ impl VideoSource for AvFoundationSource {
     }
 
     fn set_format(&mut self, format: &CaptureFormat) -> Result<()> {
-        // Find the matching AVCaptureDeviceFormat
+        // Find the matching AVCaptureDeviceFormat along with the range that contains the requested fps.
         let device_formats = unsafe { self.device.formats() };
-        let target_format = device_formats.iter().find(|fmt| {
+        let mut target: Option<(
+            objc2::rc::Retained<objc2_av_foundation::AVCaptureDeviceFormat>,
+            objc2::rc::Retained<objc2_av_foundation::AVFrameRateRange>,
+        )> = None;
+
+        for fmt in device_formats.iter() {
             let desc = unsafe { fmt.formatDescription() };
             let dimensions =
                 unsafe { objc2_core_media::CMVideoFormatDescriptionGetDimensions(&desc) };
-            let width = dimensions.width as u32;
-            let height = dimensions.height as u32;
-
-            if width != format.width || height != format.height {
-                return false;
+            if dimensions.width as u32 != format.width
+                || dimensions.height as u32 != format.height
+            {
+                continue;
             }
 
             let ranges = unsafe { fmt.videoSupportedFrameRateRanges() };
-            ranges.iter().any(|range| {
-                let max_fps = unsafe { range.maxFrameRate() } as u32;
-                max_fps >= format.fps
-            })
-        });
+            if let Some(range) = ranges.iter().find(|range| {
+                let min_fps = unsafe { range.minFrameRate() };
+                let max_fps = unsafe { range.maxFrameRate() };
+                let fps = format.fps as f64;
+                // Accept the range if the requested fps is within it, with tolerance
+                // for devices that report slightly-offset rates (e.g. 59.9998).
+                fps >= min_fps - 0.5 && fps <= max_fps + 0.5
+            }) {
+                target = Some((fmt.retain(), range.retain()));
+                break;
+            }
+        }
 
-        let Some(avformat) = target_format else {
+        let Some((avformat, range)) = target else {
             anyhow::bail!(
                 "No matching format found for {}x{} @ {}fps",
                 format.width,
@@ -292,23 +317,20 @@ impl VideoSource for AvFoundationSource {
             );
         };
 
+        // Use the exact minFrameDuration reported by the device. Some capture devices
+        // report rates like 60000240/1000000 fps (not exactly 60), and passing a
+        // computed 1/fps that falls outside the advertised range causes
+        // setActiveVideoMinFrameDuration: to throw NSInvalidArgumentException.
+        let duration = unsafe { range.minFrameDuration() };
+
         unsafe {
             self.device
                 .lockForConfiguration()
                 .map_err(|e| anyhow::anyhow!("Failed to lock device for configuration: {}", e))?;
 
             self.device.setActiveFormat(&avformat);
-
-            // Set frame duration to 1/fps
-            let duration = objc2_core_media::CMTime {
-                value: 1,
-                timescale: format.fps as i32,
-                flags: objc2_core_media::CMTimeFlags::Valid,
-                epoch: 0,
-            };
             self.device.setActiveVideoMinFrameDuration(duration);
             self.device.setActiveVideoMaxFrameDuration(duration);
-
             self.device.unlockForConfiguration();
         }
 
@@ -331,6 +353,7 @@ impl VideoSource for AvFoundationSource {
             width: raw.width,
             height: raw.height,
             data: raw.data,
+            pixel_format: FramePixelFormat::Bgra8,
             timestamp: raw.timestamp,
         })
     }

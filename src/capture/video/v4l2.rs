@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -9,7 +10,10 @@ use v4l::io::traits::CaptureStream;
 use v4l::video::Capture;
 use v4l::Device;
 
-use crate::capture::format::{mjpeg_to_rgb, yuyv_to_rgb, CaptureFormat, Frame, PixelFormat};
+use crate::capture::format::{
+    mjpeg_to_rgb, yuyv_to_rgb, CaptureFormat, Frame, FramePixelFormat, PixelFormat,
+};
+use crate::stats::FrameStats;
 
 use super::VideoSource;
 
@@ -18,16 +22,18 @@ pub struct V4l2Source {
     device: Device,
     stream: Option<Stream<'static>>,
     current_format: Option<CaptureFormat>,
+    stats: Arc<FrameStats>,
 }
 
 impl V4l2Source {
     /// Opens a V4L2 device at the given path (e.g. "/dev/video2").
-    pub fn new(device_path: &str) -> Result<Self> {
+    pub fn new(device_path: &str, stats: Arc<FrameStats>) -> Result<Self> {
         let device = Device::with_path(device_path).context("Failed to open V4L2 device")?;
         Ok(Self {
             device,
             stream: None,
             current_format: None,
+            stats,
         })
     }
 }
@@ -172,10 +178,12 @@ impl VideoSource for V4l2Source {
             }
         };
 
+        self.stats.inc_captured();
         Ok(Frame {
             width,
             height,
             data,
+            pixel_format: FramePixelFormat::Rgb8,
             timestamp: Instant::now(),
         })
     }

@@ -6,6 +6,18 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+use std::time::Instant;
+
+use crate::capture::format::FramePixelFormat;
+
+/// Platform-specific hardware H.264 encoder names, in preference order.
+/// `None` falls through to `libx264` (software).
+#[cfg(target_os = "macos")]
+const HARDWARE_H264_ENCODERS: &[&str] = &["h264_videotoolbox"];
+#[cfg(target_os = "windows")]
+const HARDWARE_H264_ENCODERS: &[&str] = &["h264_mf", "h264_nvenc", "h264_qsv", "h264_amf"];
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const HARDWARE_H264_ENCODERS: &[&str] = &[];
 
 /// Generate the output path for a recording.
 pub fn recording_path() -> PathBuf {
@@ -26,6 +38,8 @@ pub struct EncoderConfig {
     pub fps: u32,
     pub audio_sample_rate: u32,
     pub audio_channels: u16,
+    /// Pixel format of the incoming video frames on `video_rx`.
+    pub input_format: FramePixelFormat,
 }
 
 /// Trait for video+audio encoders that run on a dedicated thread.
@@ -129,8 +143,24 @@ fn encode_loop(
         .contains(format::flag::Flags::GLOBAL_HEADER);
 
     // --- Video encoder setup ---
-    let video_codec = ffmpeg_next::encoder::find(ffmpeg_next::codec::Id::H264)
-        .context("H264 encoder not found")?;
+    // Prefer a platform hardware H.264 encoder (VideoToolbox on macOS, Media
+    // Foundation on Windows, etc.). Software x264 at 1080p60 with B-frames
+    // can't keep up on a lot of machines — frames start backing up in the
+    // try_send channel and the timeline gets compressed.
+    let (video_codec, is_hardware) = HARDWARE_H264_ENCODERS
+        .iter()
+        .find_map(|name| ffmpeg_next::encoder::find_by_name(name).map(|c| (c, *name)))
+        .map(|(codec, name)| {
+            log::info!("Using hardware H.264 encoder: {}", name);
+            (codec, true)
+        })
+        .or_else(|| {
+            ffmpeg_next::encoder::find(ffmpeg_next::codec::Id::H264).map(|c| {
+                log::info!("Using software H.264 encoder (libx264)");
+                (c, false)
+            })
+        })
+        .context("No H.264 encoder available")?;
 
     let video_ctx = ffmpeg_next::codec::context::Context::new_with_codec(video_codec);
     let mut video_enc = video_ctx
@@ -145,7 +175,14 @@ fn encode_loop(
     video_enc.set_frame_rate(Some((config.fps as i32, 1)));
     video_enc.set_bit_rate(8_000_000);
     video_enc.set_gop(config.fps * 2);
-    video_enc.set_max_b_frames(2);
+    // VideoToolbox handles B-frames poorly (frame reordering artifacts, higher
+    // latency). Keep B-frames for software x264 where they materially help
+    // compression; skip them for hardware paths.
+    if is_hardware {
+        video_enc.set_max_b_frames(0);
+    } else {
+        video_enc.set_max_b_frames(2);
+    }
 
     if global_header {
         video_enc.set_flags(ffmpeg_next::codec::flag::Flags::GLOBAL_HEADER);
@@ -209,9 +246,13 @@ fn encode_loop(
     let video_time_base = output_ctx.stream(video_stream_index).unwrap().time_base();
     let audio_time_base = output_ctx.stream(audio_stream_index).unwrap().time_base();
 
-    // --- Scaler for RGB24 -> YUV420P ---
+    // --- Scaler for source pixel format -> YUV420P ---
+    let (src_pixel, src_bpp) = match config.input_format {
+        FramePixelFormat::Rgb8 => (format::Pixel::RGB24, 3usize),
+        FramePixelFormat::Bgra8 => (format::Pixel::BGRA, 4usize),
+    };
     let mut scaler = sws::Context::get(
-        format::Pixel::RGB24,
+        src_pixel,
         config.width,
         config.height,
         format::Pixel::YUV420P,
@@ -221,7 +262,12 @@ fn encode_loop(
     )
     .context("Failed to create scaler")?;
 
-    let mut video_pts: i64 = 0;
+    // Wall-clock PTS baseline. If the encoder can't keep up and the render
+    // thread drops frames at `try_send`, the timeline stays anchored to real
+    // time — the output just has a lower effective frame rate, instead of
+    // compressing the captured content into a shorter video.
+    let encoding_started = Instant::now();
+    let mut last_video_pts: i64 = -1;
     let mut audio_pts: i64 = 0;
     let mut audio_buffer: Vec<f32> = Vec::new();
 
@@ -234,24 +280,21 @@ fn encode_loop(
         let mut did_work = false;
 
         // Process video frames
-        if let Ok(rgb_data) = video_rx.try_recv() {
+        if let Ok(frame_data) = video_rx.try_recv() {
             did_work = true;
-            let expected_size = (config.width * config.height * 3) as usize;
-            if rgb_data.len() == expected_size {
-                let mut src_frame = ffmpeg_next::frame::Video::new(
-                    format::Pixel::RGB24,
-                    config.width,
-                    config.height,
-                );
-                // Copy RGB data into source frame, row by row respecting stride
+            let expected_size = (config.width as usize) * (config.height as usize) * src_bpp;
+            if frame_data.len() == expected_size {
+                let mut src_frame =
+                    ffmpeg_next::frame::Video::new(src_pixel, config.width, config.height);
+                // Copy pixel data into source frame, row by row respecting stride
                 let stride = src_frame.stride(0);
-                let row_bytes = (config.width * 3) as usize;
+                let row_bytes = (config.width as usize) * src_bpp;
                 for y in 0..config.height as usize {
                     let src_offset = y * row_bytes;
                     let dst_offset = y * stride;
                     let dst = src_frame.data_mut(0);
                     dst[dst_offset..dst_offset + row_bytes]
-                        .copy_from_slice(&rgb_data[src_offset..src_offset + row_bytes]);
+                        .copy_from_slice(&frame_data[src_offset..src_offset + row_bytes]);
                 }
 
                 let mut yuv_frame = ffmpeg_next::frame::Video::empty();
@@ -259,8 +302,14 @@ fn encode_loop(
                     .run(&src_frame, &mut yuv_frame)
                     .context("Scaler conversion failed")?;
 
-                yuv_frame.set_pts(Some(video_pts));
-                video_pts += 1;
+                // Wall-clock PTS in the encoder's time base (1/fps).
+                let elapsed_us = encoding_started.elapsed().as_micros() as i64;
+                let computed_pts = elapsed_us
+                    .saturating_mul(config.fps as i64)
+                    / 1_000_000;
+                let pts = computed_pts.max(last_video_pts + 1);
+                last_video_pts = pts;
+                yuv_frame.set_pts(Some(pts));
 
                 video_enc
                     .send_frame(&yuv_frame)

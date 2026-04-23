@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -13,7 +14,8 @@ use windows::Win32::Media::MediaFoundation::{
 };
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
-use crate::capture::format::{CaptureFormat, Frame, PixelFormat};
+use crate::capture::format::{CaptureFormat, Frame, FramePixelFormat, PixelFormat};
+use crate::stats::FrameStats;
 
 use super::VideoSource;
 
@@ -27,6 +29,7 @@ pub struct MediaFoundationSource {
     reader: IMFSourceReader,
     current_format: Option<CaptureFormat>,
     _com_initialized: ComGuard,
+    stats: Arc<FrameStats>,
 }
 
 /// RAII guard for COM initialization/shutdown.
@@ -80,7 +83,7 @@ impl MediaFoundationSource {
     ///
     /// On Windows, `device_path` is matched as a substring against
     /// the friendly name of enumerated video capture devices.
-    pub fn new(device_path: &str) -> Result<Self> {
+    pub fn new(device_path: &str, stats: Arc<FrameStats>) -> Result<Self> {
         let com_guard = init_com()?;
 
         let source = find_device(device_path)?;
@@ -100,6 +103,7 @@ impl MediaFoundationSource {
             reader,
             current_format: None,
             _com_initialized: com_guard,
+            stats,
         })
     }
 }
@@ -376,10 +380,12 @@ impl VideoSource for MediaFoundationSource {
                 }
             };
 
+            self.stats.inc_captured();
             Ok(Frame {
                 width,
                 height,
                 data,
+                pixel_format: FramePixelFormat::Rgb8,
                 timestamp: Instant::now(),
             })
         }

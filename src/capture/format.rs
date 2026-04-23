@@ -70,10 +70,34 @@ pub fn yuyv_to_rgb(yuyv: &[u8], width: u32, height: u32) -> Vec<u8> {
     rgb
 }
 
+/// Layout of pixel data in `Frame.data`.
+///
+/// The native macOS path keeps BGRA end-to-end so the GPU can do the channel
+/// swizzle via the texture format (wgpu's `Bgra8UnormSrgb`). Linux and Windows
+/// still decode MJPEG/YUYV to RGB24 on the CPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FramePixelFormat {
+    /// 4 bytes per pixel, order B, G, R, A. Produced by AVFoundation.
+    Bgra8,
+    /// 3 bytes per pixel, order R, G, B. Produced by the v4l2 and Media
+    /// Foundation backends after MJPEG/YUYV decode.
+    Rgb8,
+}
+
+impl FramePixelFormat {
+    pub fn bytes_per_pixel(self) -> usize {
+        match self {
+            FramePixelFormat::Bgra8 => 4,
+            FramePixelFormat::Rgb8 => 3,
+        }
+    }
+}
+
 pub struct Frame {
     pub width: u32,
     pub height: u32,
     pub data: Vec<u8>,
+    pub pixel_format: FramePixelFormat,
     pub timestamp: Instant,
 }
 
