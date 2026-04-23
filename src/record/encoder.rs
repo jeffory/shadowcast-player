@@ -171,6 +171,11 @@ fn encode_loop(
     video_enc.set_width(config.width);
     video_enc.set_height(config.height);
     video_enc.set_format(format::Pixel::YUV420P);
+    // Tag output as limited-range (BT.601/709 "TV" range, 16-235). Matches
+    // what VideoToolbox produces by default, but without this the encoder
+    // warns `Color range not set for yuv420p` and downstream players have to
+    // guess.
+    video_enc.set_color_range(ffmpeg_next::color::Range::MPEG);
     video_enc.set_time_base((1, config.fps as i32));
     video_enc.set_frame_rate(Some((config.fps as i32, 1)));
     video_enc.set_bit_rate(8_000_000);

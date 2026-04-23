@@ -8,9 +8,10 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass, Message};
 use objc2_av_foundation::{
     AVCaptureConnection, AVCaptureDevice, AVCaptureDeviceInput, AVCaptureOutput, AVCaptureSession,
-    AVCaptureVideoDataOutput, AVCaptureVideoDataOutputSampleBufferDelegate, AVMediaTypeVideo,
+    AVCaptureSessionPresetInputPriority, AVCaptureVideoDataOutput,
+    AVCaptureVideoDataOutputSampleBufferDelegate, AVMediaTypeVideo,
 };
-use objc2_core_media::CMSampleBuffer;
+use objc2_core_media::{CMSampleBuffer, CMTime};
 use objc2_core_video::{
     kCVPixelFormatType_32BGRA, CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow,
     CVPixelBufferGetHeight, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress,
@@ -151,6 +152,26 @@ impl AvFoundationSource {
         }
         unsafe { session.addInput(&input) };
 
+        // Tell AVCaptureSession not to pick a format for us. Without this the
+        // session defaults to `AVCaptureSessionPresetHigh`, which overrides
+        // anything we set via `AVCaptureDevice::setActiveFormat` when
+        // `startRunning` runs — the visible symptom is that the device falls
+        // back to its native default frame rate (e.g. 25 or 30 fps) even after
+        // we've picked a 60 fps device format. Must run after `addInput`:
+        // `canSetSessionPreset(InputPriority)` only returns true once at least
+        // one input is attached.
+        unsafe {
+            let input_priority = AVCaptureSessionPresetInputPriority;
+            if session.canSetSessionPreset(input_priority) {
+                session.setSessionPreset(input_priority);
+            } else {
+                log::warn!(
+                    "Cannot set AVCaptureSession preset to InputPriority; \
+                     device activeFormat may be overridden"
+                );
+            }
+        }
+
         // Create video data output configured for BGRA pixel format
         let output = unsafe { AVCaptureVideoDataOutput::new() };
 
@@ -193,6 +214,17 @@ impl AvFoundationSource {
             current_format: None,
             stats,
         })
+    }
+}
+
+/// Render a FourCharCode (Core Media subtype) as its printable 4-char tag
+/// (e.g. `0x6D6A7067` → `"mjpg"`). Falls back to hex when bytes are unprintable.
+fn format_fourcc(fcc: u32) -> String {
+    let bytes = fcc.to_be_bytes();
+    if bytes.iter().all(|b| b.is_ascii_graphic() || *b == b' ') {
+        String::from_utf8_lossy(&bytes).into_owned()
+    } else {
+        format!("0x{:08x}", fcc)
     }
 }
 
@@ -283,11 +315,30 @@ impl VideoSource for AvFoundationSource {
     }
 
     fn set_format(&mut self, format: &CaptureFormat) -> Result<()> {
-        // Find the matching AVCaptureDeviceFormat along with the range that contains the requested fps.
+        // Walk device formats looking for a match on dimensions AND a frame-
+        // rate range that actually tops out at the requested fps. The old
+        // code took the first range containing `format.fps`, which — for a
+        // device format advertising e.g. 15–120 fps — would then set
+        // minFrameDuration to 1/120 instead of 1/60. Prefer a range whose
+        // maxFrameRate matches the requested fps (within 0.5 fps to tolerate
+        // devices that report fractional rates like 59.9998).
+        #[derive(Clone, Copy)]
+        enum MatchKind {
+            Exact,
+            Contained,
+        }
+
+        let requested_fps = format.fps as f64;
         let device_formats = unsafe { self.device.formats() };
         let mut target: Option<(
             objc2::rc::Retained<objc2_av_foundation::AVCaptureDeviceFormat>,
             objc2::rc::Retained<objc2_av_foundation::AVFrameRateRange>,
+            MatchKind,
+        )> = None;
+        let mut fallback: Option<(
+            objc2::rc::Retained<objc2_av_foundation::AVCaptureDeviceFormat>,
+            objc2::rc::Retained<objc2_av_foundation::AVFrameRateRange>,
+            MatchKind,
         )> = None;
 
         for fmt in device_formats.iter() {
@@ -301,20 +352,27 @@ impl VideoSource for AvFoundationSource {
             }
 
             let ranges = unsafe { fmt.videoSupportedFrameRateRanges() };
-            if let Some(range) = ranges.iter().find(|range| {
+            for range in ranges.iter() {
                 let min_fps = unsafe { range.minFrameRate() };
                 let max_fps = unsafe { range.maxFrameRate() };
-                let fps = format.fps as f64;
-                // Accept the range if the requested fps is within it, with tolerance
-                // for devices that report slightly-offset rates (e.g. 59.9998).
-                fps >= min_fps - 0.5 && fps <= max_fps + 0.5
-            }) {
-                target = Some((fmt.retain(), range.retain()));
+
+                if (max_fps - requested_fps).abs() <= 0.5 {
+                    target = Some((fmt.retain(), range.retain(), MatchKind::Exact));
+                    break;
+                }
+                if fallback.is_none()
+                    && requested_fps >= min_fps - 0.5
+                    && requested_fps <= max_fps + 0.5
+                {
+                    fallback = Some((fmt.retain(), range.retain(), MatchKind::Contained));
+                }
+            }
+            if target.is_some() {
                 break;
             }
         }
 
-        let Some((avformat, range)) = target else {
+        let Some((avformat, range, match_kind)) = target.or(fallback) else {
             anyhow::bail!(
                 "No matching format found for {}x{} @ {}fps",
                 format.width,
@@ -323,21 +381,91 @@ impl VideoSource for AvFoundationSource {
             );
         };
 
-        // Use the exact minFrameDuration reported by the device. Some capture devices
-        // report rates like 60000240/1000000 fps (not exactly 60), and passing a
-        // computed 1/fps that falls outside the advertised range causes
-        // setActiveVideoMinFrameDuration: to throw NSInvalidArgumentException.
-        let duration = unsafe { range.minFrameDuration() };
+        // Diagnostic: what native format are we asking the device for? Useful
+        // when the capture rate doesn't match the requested fps — e.g. picking
+        // an uncompressed subtype (`420v`, `BGRA`) where USB bandwidth caps at
+        // 30 fps even though a sibling `MJPG` format would do 60.
+        let subtype = {
+            let desc = unsafe { avformat.formatDescription() };
+            let fcc = unsafe { desc.media_sub_type() };
+            format_fourcc(fcc)
+        };
+        let range_min = unsafe { range.minFrameRate() };
+        let range_max = unsafe { range.maxFrameRate() };
+        log::info!(
+            "AVFoundation selected device format: {}x{} {} [{:.2}–{:.2} fps] for requested {}x{}@{}",
+            format.width,
+            format.height,
+            subtype,
+            range_min,
+            range_max,
+            format.width,
+            format.height,
+            format.fps
+        );
 
+        // Pick the frame duration to clamp the device to. When we matched a
+        // range whose max equals the requested fps, the range's own
+        // `minFrameDuration` is the exact right value (and handles rates like
+        // 60000240/1000000 that won't round-trip through a hand-computed
+        // 1/fps). When we only have a "contained" match — e.g. a 5-120 fps
+        // range when asking for 60 — we must compute 1/fps ourselves, since
+        // `range.minFrameDuration` would clamp the device to the range's max.
+        let duration = match match_kind {
+            MatchKind::Exact => unsafe { range.minFrameDuration() },
+            MatchKind::Contained => CMTime {
+                value: 1,
+                timescale: format.fps as i32,
+                flags: objc2_core_media::CMTimeFlags::Valid,
+                epoch: 0,
+            },
+        };
+
+        // Wrap device configuration inside the session's begin/commit so the
+        // activeFormat + frame duration changes are applied atomically and
+        // the session doesn't re-pick a format between our three setters.
         unsafe {
-            self.device
+            self.session.beginConfiguration();
+
+            let lock_result = self
+                .device
                 .lockForConfiguration()
-                .map_err(|e| anyhow::anyhow!("Failed to lock device for configuration: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to lock device for configuration: {}", e));
+            if let Err(e) = lock_result {
+                self.session.commitConfiguration();
+                return Err(e);
+            }
 
             self.device.setActiveFormat(&avformat);
             self.device.setActiveVideoMinFrameDuration(duration);
             self.device.setActiveVideoMaxFrameDuration(duration);
             self.device.unlockForConfiguration();
+
+            self.session.commitConfiguration();
+        }
+
+        // Verify: read back the activeFormat + active frame duration so we
+        // can confirm the change stuck. If AVFoundation ignored us (e.g.
+        // because the preset silently reverted), this log line will show
+        // a mismatch.
+        unsafe {
+            let active = self.device.activeFormat();
+            let desc = active.formatDescription();
+            let dims = objc2_core_media::CMVideoFormatDescriptionGetDimensions(&desc);
+            let active_subtype = format_fourcc(desc.media_sub_type());
+            let min_dur: CMTime = self.device.activeVideoMinFrameDuration();
+            let effective_fps = if min_dur.value > 0 {
+                min_dur.timescale as f64 / min_dur.value as f64
+            } else {
+                0.0
+            };
+            log::info!(
+                "AVFoundation active format after set: {}x{} {} @ {:.2} fps",
+                dims.width,
+                dims.height,
+                active_subtype,
+                effective_fps
+            );
         }
 
         self.current_format = Some(format.clone());
