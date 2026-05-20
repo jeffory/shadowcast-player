@@ -9,13 +9,23 @@ enabled = true
 # pico-keeb: forward captured keyboard / mouse input as USB HID frames over a
 # serial port to a pico-keeb RP2040 board. Requires building with
 # `--features pico-keeb`. Toggle capture mode at runtime with the `[capture]`
-# toggle key (default RightCtrl).
-# [plugins.pico-keeb]
+# toggle key (default Right Ctrl).
+[plugins.pico-keeb]
 # enabled = true
-# port = "/dev/ttyUSB0"      # required serial device path
-# baud = 921600              # default 921600
-# forward_mouse = true       # set false to forward keyboard only
-# key_hold_ms = 0            # raise to ~30 for MiSTer-style chatter-filter targets
+port = "/dev/ttyUSB0"            # Linux:   typical FTDI / CH340 path
+# port = "/dev/cu.usbserial-XXXX" # macOS:   replace XXXX with your device's suffix
+# port = "COM3"                   # Windows: pick the COM port assigned to the pico-keeb
+baud = 921600                    # default 921600 — match the firmware build
+forward_mouse = true             # set false to forward keyboard only
+key_hold_ms = 0                  # raise to ~30 for MiSTer-style chatter-filter targets
+
+# Capture-mode toggle + behaviour. Applies to every plugin that consumes
+# keyboard / mouse events (currently pico-keeb); see the Plugins section of
+# the README for the full list of accepted toggle keys.
+[capture]
+toggle = "RightCtrl"   # aliases: RightCtrl/LeftCtrl, RightAlt/LeftAlt, RightShift/LeftShift,
+                       # RightSuper/LeftSuper, F1..F12, ScrollLock, Pause, CapsLock
+mouse = true           # set false to forward keyboard only, even on enabled plugins
 
 # Future plugins:
 # [plugins.mcp-server]

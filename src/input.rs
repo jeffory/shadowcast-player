@@ -214,6 +214,39 @@ pub fn parse_toggle_key(name: &str) -> Option<PhysicalKey> {
     Some(PhysicalKey::Code(code))
 }
 
+/// Human-readable label for the capture-mode toggle key, used by the on-screen
+/// indicator overlay. Covers every `KeyCode` that [`parse_toggle_key`] accepts;
+/// anything else falls back to a generic phrase so the indicator never shows
+/// a debug-looking string.
+pub fn physical_key_display_name(key: PhysicalKey) -> &'static str {
+    match key {
+        PhysicalKey::Code(KeyCode::ControlRight) => "Right Ctrl",
+        PhysicalKey::Code(KeyCode::ControlLeft) => "Left Ctrl",
+        PhysicalKey::Code(KeyCode::AltRight) => "Right Alt",
+        PhysicalKey::Code(KeyCode::AltLeft) => "Left Alt",
+        PhysicalKey::Code(KeyCode::ShiftRight) => "Right Shift",
+        PhysicalKey::Code(KeyCode::ShiftLeft) => "Left Shift",
+        PhysicalKey::Code(KeyCode::SuperRight) => "Right Super",
+        PhysicalKey::Code(KeyCode::SuperLeft) => "Left Super",
+        PhysicalKey::Code(KeyCode::F1) => "F1",
+        PhysicalKey::Code(KeyCode::F2) => "F2",
+        PhysicalKey::Code(KeyCode::F3) => "F3",
+        PhysicalKey::Code(KeyCode::F4) => "F4",
+        PhysicalKey::Code(KeyCode::F5) => "F5",
+        PhysicalKey::Code(KeyCode::F6) => "F6",
+        PhysicalKey::Code(KeyCode::F7) => "F7",
+        PhysicalKey::Code(KeyCode::F8) => "F8",
+        PhysicalKey::Code(KeyCode::F9) => "F9",
+        PhysicalKey::Code(KeyCode::F10) => "F10",
+        PhysicalKey::Code(KeyCode::F11) => "F11",
+        PhysicalKey::Code(KeyCode::F12) => "F12",
+        PhysicalKey::Code(KeyCode::ScrollLock) => "Scroll Lock",
+        PhysicalKey::Code(KeyCode::Pause) => "Pause",
+        PhysicalKey::Code(KeyCode::CapsLock) => "Caps Lock",
+        _ => "the configured toggle key",
+    }
+}
+
 /// Map a winit mouse button to its forwarded counterpart. Returns `None` for
 /// `Back`/`Forward`/`Other(_)`, which the pico-keeb plugin doesn't model.
 pub fn map_mouse_button(button: WinitMouseButton) -> Option<CoreMouseButton> {
@@ -415,6 +448,23 @@ mod tests {
         let other = PhysicalKey::Code(KeyCode::KeyA);
         assert!(!should_flip_capture_mode(other, toggle, true, false));
         assert!(!should_flip_capture_mode(other, toggle, false, false));
+    }
+
+    #[test]
+    fn display_name_covers_aliases_and_falls_back() {
+        assert_eq!(
+            physical_key_display_name(PhysicalKey::Code(KeyCode::ControlRight)),
+            "Right Ctrl"
+        );
+        assert_eq!(
+            physical_key_display_name(PhysicalKey::Code(KeyCode::F12)),
+            "F12"
+        );
+        // Unknown key falls back to the generic phrase, not a debug repr.
+        assert_eq!(
+            physical_key_display_name(PhysicalKey::Code(KeyCode::KeyA)),
+            "the configured toggle key"
+        );
     }
 
     #[test]

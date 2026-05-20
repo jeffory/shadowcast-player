@@ -586,11 +586,15 @@ impl ApplicationHandler for App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        // Pass events to egui first
+        // Pass events to egui first. We still let egui *see* every event so
+        // its internal modifier / focus tracking stays current, but while
+        // capture mode is on we never let it short-circuit: keystrokes must
+        // reach the capture toggle handler and the plugin forwarder even if
+        // a (display-only) overlay technically lives above the video.
         if let Some(egui_state) = &mut self.egui_state {
             if let Some(window) = &self.window {
                 let response = egui_state.on_window_event(window, &event);
-                if response.consumed {
+                if response.consumed && !self.capture_mode {
                     return;
                 }
             }
@@ -993,8 +997,10 @@ impl ApplicationHandler for App {
                 // context run + tessellate + extra render pass, which is
                 // worth ~1-3 ms per frame on a 60 Hz timeline.
                 self.toolbar.tick();
-                let needs_egui =
-                    !self.source_connected || self.toolbar.visible || self.stats_enabled;
+                let needs_egui = !self.source_connected
+                    || self.toolbar.visible
+                    || self.stats_enabled
+                    || self.capture_mode;
 
                 if needs_egui {
                     let egui_state = self.egui_state.as_mut().unwrap();
@@ -1003,6 +1009,9 @@ impl ApplicationHandler for App {
                     let source_connected = self.source_connected;
                     let stats_enabled = self.stats_enabled;
                     let stats_snapshot = self.last_stats_snapshot;
+                    let capture_mode = self.capture_mode;
+                    let capture_toggle_label =
+                        input::physical_key_display_name(self.capture_toggle_key);
                     let raw_input = egui_state.take_egui_input(window);
                     let full_output = self.egui_ctx.run(raw_input, |ctx| {
                         if !source_connected {
@@ -1032,6 +1041,12 @@ impl ApplicationHandler for App {
                         self.toolbar.ui(ctx, &self.formats);
                         if stats_enabled {
                             draw_stats_overlay(ctx, stats_snapshot);
+                        }
+                        if capture_mode {
+                            crate::render::overlay::draw_capture_indicator(
+                                ctx,
+                                capture_toggle_label,
+                            );
                         }
                     });
                     egui_state.handle_platform_output(window, full_output.platform_output);

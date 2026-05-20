@@ -199,3 +199,42 @@ impl Toolbar {
         ctx.request_repaint();
     }
 }
+
+/// Draw the capture-mode indicator pill at the top-right corner. Shown
+/// whenever the host is in capture mode so the user can see at a glance
+/// that their input is being forwarded, and which key releases it. The
+/// area is `interactable(false)` so it never swallows pointer or keyboard
+/// events — those still need to reach the capture-mode toggle handler.
+pub fn draw_capture_indicator(ctx: &egui::Context, toggle_label: &str) {
+    egui::Area::new(egui::Id::new("capture_indicator_overlay"))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 8.0))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200))
+                .inner_margin(egui::Margin::symmetric(10, 6))
+                .corner_radius(12.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                        ui.painter().circle_filled(
+                            rect.center(),
+                            5.0,
+                            egui::Color32::from_rgb(220, 30, 30),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "INPUT CAPTURED — press {} to release",
+                                toggle_label
+                            ))
+                            .monospace()
+                            .size(12.0)
+                            .color(egui::Color32::from_gray(230)),
+                        );
+                    });
+                });
+        });
+}
