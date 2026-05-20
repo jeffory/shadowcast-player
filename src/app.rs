@@ -553,6 +553,13 @@ impl ApplicationHandler for App {
             plugin_host.register(shadowcast_plugin_logger::LoggerPlugin, logger_config);
         }
 
+        #[cfg(feature = "pico-keeb")]
+        {
+            if let Some(cfg) = self.config.plugin_enabled("pico-keeb") {
+                plugin_host.register(shadowcast_plugin_pico_keeb::PicoKeebPlugin, cfg.clone());
+            }
+        }
+
         self.plugin_host = Some(plugin_host);
 
         // Emit initial device connected event if source was found

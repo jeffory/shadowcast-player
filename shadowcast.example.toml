@@ -6,15 +6,22 @@
 [plugins.example-logger]
 enabled = true
 
+# pico-keeb: forward captured keyboard / mouse input as USB HID frames over a
+# serial port to a pico-keeb RP2040 board. Requires building with
+# `--features pico-keeb`. Toggle capture mode at runtime with the `[capture]`
+# toggle key (default RightCtrl).
+# [plugins.pico-keeb]
+# enabled = true
+# port = "/dev/ttyUSB0"      # required serial device path
+# baud = 921600              # default 921600
+# forward_mouse = true       # set false to forward keyboard only
+# key_hold_ms = 0            # raise to ~30 for MiSTer-style chatter-filter targets
+
 # Future plugins:
 # [plugins.mcp-server]
 # enabled = true
 # port = 8080
 # host = "127.0.0.1"
-#
-# [plugins.hid-emulator]
-# enabled = false
-# device = "/dev/ttyACM0"
 #
 # [plugins.stream-output]
 # enabled = false

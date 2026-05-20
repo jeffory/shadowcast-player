@@ -1,0 +1,13 @@
+[package]
+name = "shadowcast-plugin-pico-keeb"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+shadowcast-core = { path = "../../shadowcast-core" }
+pico-keeb-protocol = { git = "https://github.com/jeffory/pico-keeb", default-features = false }
+serialport = "4.5"
+crossbeam-channel = "0.5"
+toml = "0.8"
+log = "0.4"
+anyhow = "1"
