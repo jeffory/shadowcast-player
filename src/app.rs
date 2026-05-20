@@ -6,10 +6,10 @@ use winit::application::ApplicationHandler;
 
 use crate::stats::{FrameStats, StatsSnapshot, StatsTicker};
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
-use winit::keyboard::{Key, ModifiersState, NamedKey};
-use winit::window::{Fullscreen, Window, WindowId};
+use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
+use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 use shadowcast_core::{AppCommand as PluginCommand, AppEvent, Frame as PluginFrame};
 
@@ -18,6 +18,7 @@ use crate::capture::device;
 use crate::capture::format::{CaptureFormat, FramePixelFormat};
 use crate::capture::video::{PlatformVideoSource, VideoSource};
 use crate::config::AppConfig;
+use crate::input;
 use crate::plugin::PluginHost;
 use crate::record::encoder::{Encoder, EncoderConfig, FfmpegEncoder};
 use crate::record::screenshot::take_screenshot;
@@ -85,6 +86,15 @@ pub struct App {
     stats_ticker: StatsTicker,
     last_stats_snapshot: Option<StatsSnapshot>,
     stats_enabled: bool,
+    /// Whether keyboard / mouse events are being forwarded to plugins. While
+    /// true, the player's own shortcuts (Esc, F11, F12, Ctrl+S, Ctrl+R) are
+    /// suppressed; only the capture toggle key still acts locally.
+    capture_mode: bool,
+    /// Physical key that flips `capture_mode` on the pressed edge.
+    capture_toggle_key: PhysicalKey,
+    /// If false, mouse events are not forwarded even while capture is on.
+    /// Mirrors the `[capture] mouse` config option.
+    capture_forward_mouse: bool,
 }
 
 impl Drop for App {
@@ -106,6 +116,16 @@ impl Default for App {
 
 impl App {
     pub fn new() -> Self {
+        let config = AppConfig::load();
+        let capture_toggle_key =
+            input::parse_toggle_key(&config.capture.toggle).unwrap_or_else(|| {
+                log::warn!(
+                    "Unknown [capture] toggle key '{}', defaulting to RightCtrl",
+                    config.capture.toggle
+                );
+                PhysicalKey::Code(KeyCode::ControlRight)
+            });
+        let capture_forward_mouse = config.capture.mouse;
         Self {
             window: None,
             renderer: None,
@@ -131,13 +151,60 @@ impl App {
             last_audio_retry: None,
             audio_retry_failures: 0,
             audio_names: Vec::new(),
-            config: AppConfig::load(),
+            config,
             plugin_host: None,
             quit_requested: false,
             stats: Arc::new(FrameStats::default()),
             stats_ticker: StatsTicker::new(),
             last_stats_snapshot: None,
             stats_enabled: false,
+            capture_mode: false,
+            capture_toggle_key,
+            capture_forward_mouse,
+        }
+    }
+
+    /// Apply the cursor-grab / visibility side-effects of `capture_mode`. On
+    /// platforms where `Locked` is unsupported (Wayland may behave this way
+    /// for some compositors / Linux X11 always — see winit docs) we fall
+    /// back to `Confined`, which is good enough: relative motion is taken
+    /// from `DeviceEvent::MouseMotion` regardless.
+    fn apply_capture_mode_to_window(&self) {
+        let Some(window) = &self.window else { return };
+        if self.capture_mode {
+            if window.set_cursor_grab(CursorGrabMode::Locked).is_err()
+                && window.set_cursor_grab(CursorGrabMode::Confined).is_err()
+            {
+                log::warn!(
+                    "Cursor grab not supported on this platform; capture-mode mouse will leak"
+                );
+            }
+            window.set_cursor_visible(false);
+        } else {
+            let _ = window.set_cursor_grab(CursorGrabMode::None);
+            window.set_cursor_visible(true);
+        }
+    }
+
+    /// Hot-path forwarder for keyboard events. Delegates the mapping (and
+    /// the capture-on / toggle-key guard) to [`input::keyboard_event_for_plugins`]
+    /// so the production path and the integration tests share one
+    /// implementation. Keeping this allocation-free is intentional — see the
+    /// latency budget in the task description.
+    #[inline]
+    fn forward_keyboard_input(&self, physical_key: PhysicalKey, pressed: bool, repeat: bool) {
+        let Some(host) = &self.plugin_host else {
+            return;
+        };
+        if let Some(event) = input::keyboard_event_for_plugins(
+            self.capture_mode,
+            physical_key,
+            self.capture_toggle_key,
+            self.modifiers,
+            pressed,
+            repeat,
+        ) {
+            host.distribute_event(event);
         }
     }
 
@@ -245,7 +312,11 @@ impl App {
         }
 
         if let Some(host) = &self.plugin_host {
-            if let Some(fmt) = self.formats.get(self.toolbar.selected_format_index).cloned() {
+            if let Some(fmt) = self
+                .formats
+                .get(self.toolbar.selected_format_index)
+                .cloned()
+            {
                 host.distribute_event(AppEvent::FormatChanged { format: fmt });
             }
         }
@@ -287,9 +358,7 @@ impl App {
         if !self.try_start_audio() {
             self.audio_retry_failures = self.audio_retry_failures.saturating_add(1);
             if before < 4 && self.audio_retry_failures >= 4 {
-                log::info!(
-                    "Audio device not found after several attempts; retrying every 30s"
-                );
+                log::info!("Audio device not found after several attempts; retrying every 30s");
             }
         }
     }
@@ -481,10 +550,7 @@ impl ApplicationHandler for App {
                 .plugin_enabled("example-logger")
                 .cloned()
                 .unwrap_or_default();
-            plugin_host.register(
-                shadowcast_plugin_logger::LoggerPlugin,
-                logger_config,
-            );
+            plugin_host.register(shadowcast_plugin_logger::LoggerPlugin, logger_config);
         }
 
         self.plugin_host = Some(plugin_host);
@@ -493,7 +559,10 @@ impl ApplicationHandler for App {
         if self.source_connected {
             if let Some(host) = &self.plugin_host {
                 host.distribute_event(AppEvent::DeviceConnected {
-                    name: capture_device.as_ref().map(|d| d.name.clone()).unwrap_or_default(),
+                    name: capture_device
+                        .as_ref()
+                        .map(|d| d.name.clone())
+                        .unwrap_or_default(),
                 });
             }
         }
@@ -550,62 +619,133 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
+                        physical_key,
                         logical_key,
-                        state: ElementState::Pressed,
+                        state,
+                        repeat,
                         ..
                     },
                 ..
             } => {
-                let ctrl = self.modifiers.control_key();
-                match logical_key.as_ref() {
-                    Key::Named(NamedKey::Escape) => {
-                        if self.toolbar.is_recording {
-                            self.stop_recording();
-                        }
-                        event_loop.exit();
-                    }
-                    Key::Named(NamedKey::F11) => {
-                        if let Some(window) = &self.window {
-                            let fullscreen = if window.fullscreen().is_some() {
-                                None
-                            } else {
-                                Some(Fullscreen::Borderless(None))
-                            };
-                            window.set_fullscreen(fullscreen);
-                        }
-                    }
-                    Key::Named(NamedKey::F12) => {
-                        self.stats_enabled = !self.stats_enabled;
+                let pressed = matches!(state, ElementState::Pressed);
+
+                // The capture toggle key runs first so it works regardless of
+                // capture state. Only the pressed edge (no repeat) flips the
+                // mode; the toggle key itself is never forwarded.
+                if physical_key == self.capture_toggle_key {
+                    if input::should_flip_capture_mode(
+                        physical_key,
+                        self.capture_toggle_key,
+                        pressed,
+                        repeat,
+                    ) {
+                        self.capture_mode = !self.capture_mode;
                         log::info!(
-                            "Frame stats overlay {}",
-                            if self.stats_enabled { "enabled" } else { "disabled" }
+                            "Capture mode {}",
+                            if self.capture_mode { "ON" } else { "OFF" }
                         );
-                        if !self.stats_enabled {
-                            self.last_stats_snapshot = None;
+                        self.apply_capture_mode_to_window();
+                        if let Some(host) = &self.plugin_host {
+                            host.distribute_event(AppEvent::CaptureModeChanged {
+                                active: self.capture_mode,
+                            });
                         }
                     }
-                    Key::Character(c) if ctrl && c == "s" => {
-                        if let Some(data) = &self.last_frame_data {
-                            take_screenshot(
-                                (**data).clone(),
-                                self.last_frame_width,
-                                self.last_frame_height,
-                                self.last_frame_format,
+                } else if self.capture_mode {
+                    // Capture on: forward every other key (press + release +
+                    // repeat). The player's own shortcuts (Esc/F11/F12/Ctrl+S/
+                    // Ctrl+R) are intentionally suppressed in this branch.
+                    self.forward_keyboard_input(physical_key, pressed, repeat);
+                } else if pressed {
+                    // Capture off: the original local shortcut handling.
+                    let ctrl = self.modifiers.control_key();
+                    match logical_key.as_ref() {
+                        Key::Named(NamedKey::Escape) => {
+                            if self.toolbar.is_recording {
+                                self.stop_recording();
+                            }
+                            event_loop.exit();
+                        }
+                        Key::Named(NamedKey::F11) => {
+                            if let Some(window) = &self.window {
+                                let fullscreen = if window.fullscreen().is_some() {
+                                    None
+                                } else {
+                                    Some(Fullscreen::Borderless(None))
+                                };
+                                window.set_fullscreen(fullscreen);
+                            }
+                        }
+                        Key::Named(NamedKey::F12) => {
+                            self.stats_enabled = !self.stats_enabled;
+                            log::info!(
+                                "Frame stats overlay {}",
+                                if self.stats_enabled {
+                                    "enabled"
+                                } else {
+                                    "disabled"
+                                }
                             );
+                            if !self.stats_enabled {
+                                self.last_stats_snapshot = None;
+                            }
                         }
+                        Key::Character(c) if ctrl && c == "s" => {
+                            if let Some(data) = &self.last_frame_data {
+                                take_screenshot(
+                                    (**data).clone(),
+                                    self.last_frame_width,
+                                    self.last_frame_height,
+                                    self.last_frame_format,
+                                );
+                            }
+                        }
+                        Key::Character(c) if ctrl && c == "r" => {
+                            self.toolbar.toggle_recording();
+                            // recording_toggled flag is handled in RedrawRequested
+                        }
+                        _ => {}
                     }
-                    Key::Character(c) if ctrl && c == "r" => {
-                        self.toolbar.toggle_recording();
-                        // recording_toggled flag is handled in RedrawRequested
-                    }
-                    _ => {}
                 }
             }
 
             WindowEvent::CursorMoved { .. } => {
-                self.toolbar.on_mouse_move();
-                if let Some(window) = &self.window {
-                    window.set_cursor_visible(true);
+                // Absolute cursor motion is only used for the auto-hide
+                // toolbar; relative motion for plugins is read from
+                // DeviceEvent::MouseMotion (raw, edge-clamp-free).
+                if !self.capture_mode {
+                    self.toolbar.on_mouse_move();
+                    if let Some(window) = &self.window {
+                        window.set_cursor_visible(true);
+                    }
+                }
+            }
+
+            WindowEvent::MouseInput { state, button, .. } if self.capture_mode => {
+                if self.capture_forward_mouse {
+                    if let (Some(host), Some(mapped)) =
+                        (&self.plugin_host, input::map_mouse_button(button))
+                    {
+                        host.distribute_event(AppEvent::MouseButton {
+                            button: mapped,
+                            pressed: matches!(state, ElementState::Pressed),
+                        });
+                    }
+                }
+            }
+
+            WindowEvent::MouseWheel { delta, .. } if self.capture_mode => {
+                if self.capture_forward_mouse {
+                    if let Some(host) = &self.plugin_host {
+                        let (dx, dy) = match delta {
+                            MouseScrollDelta::LineDelta(x, y) => (x, y),
+                            MouseScrollDelta::PixelDelta(p) => (
+                                p.x as f32 / input::PIXELS_PER_SCROLL_LINE,
+                                p.y as f32 / input::PIXELS_PER_SCROLL_LINE,
+                            ),
+                        };
+                        host.distribute_event(AppEvent::MouseScroll { dx, dy });
+                    }
                 }
             }
 
@@ -959,6 +1099,25 @@ impl ApplicationHandler for App {
             }
 
             _ => {}
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: DeviceId,
+        event: DeviceEvent,
+    ) {
+        if !self.capture_mode || !self.capture_forward_mouse {
+            return;
+        }
+        if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
+            if let Some(host) = &self.plugin_host {
+                host.distribute_event(AppEvent::MouseMotion {
+                    dx: dx as f32,
+                    dy: dy as f32,
+                });
+            }
         }
     }
 }

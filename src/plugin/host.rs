@@ -1,14 +1,22 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use crossbeam_channel::Sender;
 use shadowcast_core::{AppCommand, AppEvent, Frame, Plugin, PluginContext};
 
+/// Size of each plugin's event channel. Sized to absorb keystroke bursts
+/// (e.g. a held key auto-repeating at ~30 Hz while the plugin is busy) without
+/// dropping events. 256 ≈ 8 seconds at 30 Hz before back-pressure.
+const EVENT_CHANNEL_SIZE: usize = 256;
+
 struct PluginHandle {
     name: String,
     thread: Option<JoinHandle<()>>,
     stop_flag: Arc<AtomicBool>,
+    /// Cumulative count of events dropped because this plugin's channel was
+    /// full. The host loop logs the running total at debug verbosity.
+    dropped_events: Arc<AtomicU64>,
 }
 
 pub struct PluginHost {
@@ -39,7 +47,7 @@ impl PluginHost {
 
     pub fn register(&mut self, mut plugin: impl Plugin, config: toml::Table) {
         let (frame_tx, frame_rx) = crossbeam_channel::bounded(4);
-        let (event_tx, event_rx) = crossbeam_channel::bounded(64);
+        let (event_tx, event_rx) = crossbeam_channel::bounded(EVENT_CHANNEL_SIZE);
         let command_tx = self.command_tx.clone();
 
         let stop_flag = Arc::new(AtomicBool::new(false));
@@ -71,6 +79,7 @@ impl PluginHost {
             name,
             thread: Some(handle),
             stop_flag: plugin_stop_flag,
+            dropped_events: Arc::new(AtomicU64::new(0)),
         });
     }
 
@@ -81,9 +90,33 @@ impl PluginHost {
     }
 
     pub fn distribute_event(&self, event: AppEvent) {
-        for tx in &self.event_txs {
-            let _ = tx.try_send(event.clone());
+        for (tx, handle) in self.event_txs.iter().zip(self.handles.iter()) {
+            if tx.try_send(event.clone()).is_err() {
+                // Channel full — drop the newest event. We chose newest-drop
+                // over oldest-drop because draining the channel from the
+                // producer side would require an additional sync point on the
+                // hot path; the queue is bursty so newest-drop keeps the
+                // older context (e.g. the press) and only loses the tail.
+                let prev = handle.dropped_events.fetch_add(1, Ordering::Relaxed);
+                if prev == 0 || prev.is_power_of_two() {
+                    log::debug!(
+                        "plugin '{}' event channel full, dropped {} event(s) so far",
+                        handle.name,
+                        prev + 1
+                    );
+                }
+            }
         }
+    }
+
+    /// Total events dropped for `plugin_name` due to a full channel. Returns
+    /// `None` if no such plugin is registered. Primarily intended for tests
+    /// and `RUST_LOG=debug` introspection.
+    pub fn dropped_events(&self, plugin_name: &str) -> Option<u64> {
+        self.handles
+            .iter()
+            .find(|h| h.name == plugin_name)
+            .map(|h| h.dropped_events.load(Ordering::Relaxed))
     }
 
     pub fn poll_commands(&self) -> Vec<AppCommand> {
@@ -324,5 +357,85 @@ mod tests {
         for h in &host.handles {
             assert!(h.thread.is_none());
         }
+    }
+
+    #[test]
+    fn capture_off_suppresses_keyboard_forwarding() {
+        use crate::input::keyboard_event_for_plugins;
+        use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
+
+        let (plugin, _frames, events) = CountingPlugin::new();
+        let mut host = PluginHost::new();
+        host.register(plugin, toml::Table::new());
+
+        let toggle = PhysicalKey::Code(KeyCode::ControlRight);
+        let key_a = PhysicalKey::Code(KeyCode::KeyA);
+
+        // Capture OFF: the gating function returns None, so nothing is
+        // distributed. We assert that explicitly.
+        let suppressed =
+            keyboard_event_for_plugins(false, key_a, toggle, ModifiersState::empty(), true, false);
+        assert!(suppressed.is_none());
+
+        // Capture ON: we get an AppEvent and forward it. The CountingPlugin
+        // sees exactly one event.
+        let forwarded =
+            keyboard_event_for_plugins(true, key_a, toggle, ModifiersState::empty(), true, false)
+                .expect("capture-on should produce an event");
+        assert!(matches!(forwarded, AppEvent::KeyboardInput { .. }));
+        host.distribute_event(forwarded);
+
+        // The toggle key itself never forwards, even with capture on.
+        let toggle_event =
+            keyboard_event_for_plugins(true, toggle, toggle, ModifiersState::empty(), true, false);
+        assert!(toggle_event.is_none());
+
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(events.load(Ordering::SeqCst), 1);
+
+        host.shutdown();
+    }
+
+    #[test]
+    fn dropped_events_increment_when_channel_full() {
+        // Slow plugin that never drains its event channel until shutdown,
+        // so a small burst saturates the bounded queue and the host bumps
+        // the drop counter for everything past EVENT_CHANNEL_SIZE.
+        struct NeverDrainPlugin {
+            stop: Arc<AtomicBool>,
+        }
+        impl Plugin for NeverDrainPlugin {
+            fn name(&self) -> &str {
+                "never-drain"
+            }
+            fn run(&mut self, _ctx: PluginContext) {
+                while !self.stop.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            fn stop(&self) {
+                self.stop.store(true, Ordering::SeqCst);
+            }
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let plugin = NeverDrainPlugin {
+            stop: Arc::clone(&stop),
+        };
+        let mut host = PluginHost::new();
+        host.register(plugin, toml::Table::new());
+
+        // Push well over EVENT_CHANNEL_SIZE.
+        let burst = EVENT_CHANNEL_SIZE + 20;
+        for _ in 0..burst {
+            host.distribute_event(AppEvent::DeviceDisconnected);
+        }
+
+        let dropped = host
+            .dropped_events("never-drain")
+            .expect("plugin should be registered");
+        assert!(dropped >= 20, "expected >=20 drops, got {}", dropped);
+
+        stop.store(true, Ordering::SeqCst);
+        host.shutdown();
     }
 }

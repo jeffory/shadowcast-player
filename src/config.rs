@@ -4,12 +4,31 @@ use std::path::PathBuf;
 #[derive(Debug, Default)]
 pub struct AppConfig {
     pub plugins: HashMap<String, PluginEntry>,
+    pub capture: CaptureConfig,
 }
 
 #[derive(Debug)]
 pub struct PluginEntry {
     pub enabled: bool,
     pub settings: toml::Table,
+}
+
+/// User-tunable capture-mode settings. `toggle` names a winit `KeyCode`
+/// variant (or one of the short aliases below); `mouse` controls whether
+/// mouse motion / buttons / scroll are forwarded while capture is active.
+#[derive(Debug, Clone)]
+pub struct CaptureConfig {
+    pub toggle: String,
+    pub mouse: bool,
+}
+
+impl Default for CaptureConfig {
+    fn default() -> Self {
+        Self {
+            toggle: "RightCtrl".to_string(),
+            mouse: true,
+        }
+    }
 }
 
 impl AppConfig {
@@ -53,15 +72,22 @@ impl AppConfig {
                     let mut settings = plugin_table.clone();
                     settings.remove("enabled");
 
-                    plugins.insert(
-                        name.clone(),
-                        PluginEntry { enabled, settings },
-                    );
+                    plugins.insert(name.clone(), PluginEntry { enabled, settings });
                 }
             }
         }
 
-        AppConfig { plugins }
+        let mut capture = CaptureConfig::default();
+        if let Some(toml::Value::Table(capture_table)) = table.get("capture") {
+            if let Some(toggle) = capture_table.get("toggle").and_then(|v| v.as_str()) {
+                capture.toggle = toggle.to_string();
+            }
+            if let Some(mouse) = capture_table.get("mouse").and_then(|v| v.as_bool()) {
+                capture.mouse = mouse;
+            }
+        }
+
+        AppConfig { plugins, capture }
     }
 
     fn config_path() -> PathBuf {
@@ -94,10 +120,7 @@ host = "127.0.0.1"
         assert!(settings.is_some());
         let settings = settings.unwrap();
         assert_eq!(settings.get("port").unwrap().as_integer(), Some(8080));
-        assert_eq!(
-            settings.get("host").unwrap().as_str(),
-            Some("127.0.0.1")
-        );
+        assert_eq!(settings.get("host").unwrap().as_str(), Some("127.0.0.1"));
         assert!(settings.get("enabled").is_none());
     }
 
@@ -155,5 +178,35 @@ enabled = true
     fn load_missing_file_returns_default() {
         let config = AppConfig::load();
         assert!(config.plugins.is_empty());
+    }
+
+    #[test]
+    fn capture_defaults_when_absent() {
+        let config = AppConfig::parse("");
+        assert_eq!(config.capture.toggle, "RightCtrl");
+        assert!(config.capture.mouse);
+    }
+
+    #[test]
+    fn capture_parses_toggle_and_mouse() {
+        let toml = r#"
+[capture]
+toggle = "F12"
+mouse = false
+"#;
+        let config = AppConfig::parse(toml);
+        assert_eq!(config.capture.toggle, "F12");
+        assert!(!config.capture.mouse);
+    }
+
+    #[test]
+    fn capture_partial_keeps_other_default() {
+        let toml = r#"
+[capture]
+mouse = false
+"#;
+        let config = AppConfig::parse(toml);
+        assert_eq!(config.capture.toggle, "RightCtrl");
+        assert!(!config.capture.mouse);
     }
 }

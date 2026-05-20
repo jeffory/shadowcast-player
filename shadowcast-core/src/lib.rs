@@ -52,15 +52,94 @@ pub struct Frame {
     pub timestamp: Instant,
 }
 
+/// Modifier-key bitmask layout matching the `pico-keeb-protocol`. The host
+/// produces this directly on the `KeyboardInput` hot path so plugins (the
+/// pico-keeb plugin in particular) don't need their own per-platform
+/// translation table.
+pub mod modifier {
+    pub const MOD_LCTRL: u8 = 0x01;
+    pub const MOD_LSHIFT: u8 = 0x02;
+    pub const MOD_LALT: u8 = 0x04;
+    pub const MOD_LGUI: u8 = 0x08;
+    pub const MOD_RCTRL: u8 = 0x10;
+    pub const MOD_RSHIFT: u8 = 0x20;
+    pub const MOD_RALT: u8 = 0x40;
+    pub const MOD_RGUI: u8 = 0x80;
+}
+
+/// Mouse button identifiers forwarded over [`AppEvent::MouseButton`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
 #[derive(Clone, Debug)]
 pub enum AppEvent {
-    DeviceConnected { name: String },
+    DeviceConnected {
+        name: String,
+    },
     DeviceDisconnected,
-    RecordingStarted { path: PathBuf },
-    RecordingStopped { path: PathBuf },
-    FormatChanged { format: CaptureFormat },
-    WindowResized { width: u32, height: u32 },
-    AudioStateChanged { active: bool },
+    RecordingStarted {
+        path: PathBuf,
+    },
+    RecordingStopped {
+        path: PathBuf,
+    },
+    FormatChanged {
+        format: CaptureFormat,
+    },
+    WindowResized {
+        width: u32,
+        height: u32,
+    },
+    AudioStateChanged {
+        active: bool,
+    },
+
+    /// A keyboard key press / release, forwarded by the host only while
+    /// capture mode is active. `key_code` is the USB HID Usage ID (Keyboard /
+    /// Keypad page, see pico-keeb-protocol); `scan_code` is the platform-
+    /// native scancode for plugins that need raw HW codes. `modifiers` is the
+    /// pico-keeb-protocol bitmask (see the [`modifier`] module). `repeat` is
+    /// true when the OS auto-repeated the key, false on the initial press
+    /// and on release.
+    KeyboardInput {
+        key_code: u32,
+        scan_code: u32,
+        modifiers: u8,
+        pressed: bool,
+        repeat: bool,
+    },
+
+    /// Relative mouse motion in pixels since the last event. Sourced from
+    /// `DeviceEvent::MouseMotion`, so it is raw and unaffected by cursor
+    /// clamping at the screen edge.
+    MouseMotion {
+        dx: f32,
+        dy: f32,
+    },
+
+    /// A mouse button press / release while capture mode is active.
+    MouseButton {
+        button: MouseButton,
+        pressed: bool,
+    },
+
+    /// Mouse-wheel / scroll delta in line-units (winit's `LineDelta`; pixel
+    /// deltas are approximated to lines by the host).
+    MouseScroll {
+        dx: f32,
+        dy: f32,
+    },
+
+    /// Emitted whenever the host's capture mode toggles. Plugins should use
+    /// this to release any keys they considered "held" — the host stops
+    /// forwarding releases when capture turns off mid-press.
+    CaptureModeChanged {
+        active: bool,
+    },
 }
 
 #[derive(Debug)]
