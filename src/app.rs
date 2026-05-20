@@ -178,7 +178,9 @@ impl App {
             self.encoder = Some(encoder);
 
             if let Some(host) = &self.plugin_host {
-                let path = self.encoder.as_ref()
+                let path = self
+                    .encoder
+                    .as_ref()
                     .map(|e| e.output_path().to_path_buf())
                     .unwrap_or_default();
                 host.distribute_event(AppEvent::RecordingStarted { path });
