@@ -160,6 +160,13 @@ jobs:
           mkdir -p AppDir/usr/bin
           cp target/${{ matrix.target }}/release/shadowcast-player AppDir/usr/bin/
 
+          # Version from the release tag (strip a leading 'v' -> 1.2.3). Embedded
+          # as X-AppImage-Version in the desktop file so updaters (GearLever) can
+          # show the installed version and compare it against new releases. The
+          # AppImage filename stays stable so the zsync 'latest' match still works.
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
+
           # Build the .desktop entry line-by-line to avoid heredoc indentation.
           {
             echo "[Desktop Entry]"
@@ -170,6 +177,7 @@ jobs:
             echo "Icon=shadowcast"
             echo "Categories=AudioVideo;Video;"
             echo "Terminal=false"
+            echo "X-AppImage-Version=$VERSION"
           } > shadowcast-player.desktop
 
           # Embed AppImage update information so updaters (GearLever,
