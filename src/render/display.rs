@@ -266,13 +266,7 @@ impl DisplayRenderer {
         self.texture_view = None;
     }
 
-    pub fn upload_frame(
-        &mut self,
-        data: &[u8],
-        width: u32,
-        height: u32,
-        format: FramePixelFormat,
-    ) {
+    pub fn upload_frame(&mut self, data: &[u8], width: u32, height: u32, format: FramePixelFormat) {
         // Both the texture and the surface are non-sRGB (`*Unorm`), so the
         // already-gamma-encoded bytes from the capture device pass through
         // unchanged: no automatic sRGB decode on sample, no re-encode on

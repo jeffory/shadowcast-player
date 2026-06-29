@@ -178,7 +178,9 @@ impl App {
             self.encoder = Some(encoder);
 
             if let Some(host) = &self.plugin_host {
-                let path = self.encoder.as_ref()
+                let path = self
+                    .encoder
+                    .as_ref()
                     .map(|e| e.output_path().to_path_buf())
                     .unwrap_or_default();
                 host.distribute_event(AppEvent::RecordingStarted { path });
@@ -243,7 +245,11 @@ impl App {
         }
 
         if let Some(host) = &self.plugin_host {
-            if let Some(fmt) = self.formats.get(self.toolbar.selected_format_index).cloned() {
+            if let Some(fmt) = self
+                .formats
+                .get(self.toolbar.selected_format_index)
+                .cloned()
+            {
                 host.distribute_event(AppEvent::FormatChanged { format: fmt });
             }
         }
@@ -285,9 +291,7 @@ impl App {
         if !self.try_start_audio() {
             self.audio_retry_failures = self.audio_retry_failures.saturating_add(1);
             if before < 4 && self.audio_retry_failures >= 4 {
-                log::info!(
-                    "Audio device not found after several attempts; retrying every 30s"
-                );
+                log::info!("Audio device not found after several attempts; retrying every 30s");
             }
         }
     }
@@ -479,10 +483,7 @@ impl ApplicationHandler for App {
                 .plugin_enabled("example-logger")
                 .cloned()
                 .unwrap_or_default();
-            plugin_host.register(
-                shadowcast_plugin_logger::LoggerPlugin,
-                logger_config,
-            );
+            plugin_host.register(shadowcast_plugin_logger::LoggerPlugin, logger_config);
         }
 
         self.plugin_host = Some(plugin_host);
@@ -491,7 +492,10 @@ impl ApplicationHandler for App {
         if self.source_connected {
             if let Some(host) = &self.plugin_host {
                 host.distribute_event(AppEvent::DeviceConnected {
-                    name: capture_device.as_ref().map(|d| d.name.clone()).unwrap_or_default(),
+                    name: capture_device
+                        .as_ref()
+                        .map(|d| d.name.clone())
+                        .unwrap_or_default(),
                 });
             }
         }
@@ -576,7 +580,11 @@ impl ApplicationHandler for App {
                         self.stats_enabled = !self.stats_enabled;
                         log::info!(
                             "Frame stats overlay {}",
-                            if self.stats_enabled { "enabled" } else { "disabled" }
+                            if self.stats_enabled {
+                                "enabled"
+                            } else {
+                                "disabled"
+                            }
                         );
                         if !self.stats_enabled {
                             self.last_stats_snapshot = None;

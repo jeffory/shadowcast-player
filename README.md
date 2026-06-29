@@ -1,10 +1,10 @@
 # shadowcast-player
 
-A cross-platform media player for the [Genki ShadowCast 2](https://www.genkithings.com/products/shadowcast) USB capture device, built in Rust. Captures live video and audio from the device and renders it in a GPU-accelerated window with recording and screenshot support.
+A cross-platform media player for the [Genki ShadowCast 2 and ShadowCast 3](https://www.genkithings.com/products/shadowcast) USB capture devices, built in Rust. Captures live video and audio from the device and renders it in a GPU-accelerated window with recording and screenshot support.
 
 ## Features
 
-- **Live video capture** - Real-time MJPEG/YUYV video from the ShadowCast 2
+- **Live video capture** - Real-time MJPEG/YUYV video from the ShadowCast 2 or ShadowCast 3
 - **Audio passthrough** - Captures USB audio and plays it through your default output device
 - **Recording** - Record to H.264 + AAC MP4 files; uses a hardware encoder (VideoToolbox on macOS, Media Foundation / NVENC / QSV / AMF on Windows) when available, falling back to libx264
 - **Screenshots** - Save the current frame as PNG
@@ -86,7 +86,7 @@ src/
 ├── app.rs             Application state machine and event loop
 ├── stats.rs           FrameStats counters and StatsTicker (F12 overlay + logging)
 ├── capture/
-│   ├── device.rs      ShadowCast 2 USB device discovery
+│   ├── device.rs      ShadowCast 2 / 3 USB device discovery
 │   ├── format.rs      Capture formats, Frame struct, MJPEG/YUYV → RGB decoders
 │   ├── audio.rs       Audio capture via cpal (format-adaptive i16/f32)
 │   └── video/

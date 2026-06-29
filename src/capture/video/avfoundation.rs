@@ -345,8 +345,7 @@ impl VideoSource for AvFoundationSource {
             let desc = unsafe { fmt.formatDescription() };
             let dimensions =
                 unsafe { objc2_core_media::CMVideoFormatDescriptionGetDimensions(&desc) };
-            if dimensions.width as u32 != format.width
-                || dimensions.height as u32 != format.height
+            if dimensions.width as u32 != format.width || dimensions.height as u32 != format.height
             {
                 continue;
             }

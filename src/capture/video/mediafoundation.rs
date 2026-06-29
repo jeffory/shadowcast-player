@@ -187,11 +187,7 @@ fn unpack_frame_size(packed: u64) -> (u32, u32) {
 fn unpack_frame_rate(packed: u64) -> u32 {
     let numerator = (packed >> 32) as u32;
     let denominator = packed as u32;
-    if denominator > 0 {
-        numerator / denominator
-    } else {
-        0
-    }
+    numerator.checked_div(denominator).unwrap_or(0)
 }
 
 /// Map a Media Foundation subtype GUID to our PixelFormat.

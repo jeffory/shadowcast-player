@@ -313,9 +313,7 @@ fn encode_loop(
 
                 // Wall-clock PTS in the encoder's time base (1/fps).
                 let elapsed_us = encoding_started.elapsed().as_micros() as i64;
-                let computed_pts = elapsed_us
-                    .saturating_mul(config.fps as i64)
-                    / 1_000_000;
+                let computed_pts = elapsed_us.saturating_mul(config.fps as i64) / 1_000_000;
                 let pts = computed_pts.max(last_video_pts + 1);
                 last_video_pts = pts;
                 yuv_frame.set_pts(Some(pts));

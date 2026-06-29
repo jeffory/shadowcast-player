@@ -297,12 +297,26 @@ fn enumerate_devices_windows() -> Vec<CaptureDevice> {
 
     let mut devices = Vec::new();
 
+    // RPC_E_CHANGED_MODE — COM already initialized with a different threading
+    // model. winit initializes the main thread as STA (for drag-and-drop), so a
+    // COINIT_MULTITHREADED request from there returns RPC_E_CHANGED_MODE. That's
+    // fine: COM is available regardless of apartment, we just must not
+    // CoUninitialize an apartment we didn't create. Previously any error here
+    // (including this one) caused us to bail and report no devices, so on the
+    // main thread the ShadowCast was never found even though it enumerates fine.
+    const RPC_E_CHANGED_MODE: i32 = 0x80010106u32 as i32;
+
     unsafe {
-        if CoInitializeEx(None, COINIT_MULTITHREADED).is_err() {
-            return devices;
-        }
+        let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let owns_com = match hr.0 {
+            0 | 1 => true,               // S_OK or S_FALSE — we initialized it
+            RPC_E_CHANGED_MODE => false, // already initialized in another mode
+            _ => return devices,
+        };
         if MFStartup(MF_API_VERSION, MFSTARTUP_NOSOCKET).is_err() {
-            CoUninitialize();
+            if owns_com {
+                CoUninitialize();
+            }
             return devices;
         }
 
@@ -351,8 +365,12 @@ fn enumerate_devices_windows() -> Vec<CaptureDevice> {
                     let audio_matches = vec![name.clone()];
 
                     result.push(CaptureDevice {
+                        // MF has no device path; we match by friendly name, so
+                        // carry the name through as the "path" used by find_device.
+                        // (An empty string would substring-match the *first*
+                        // capture device, not necessarily the ShadowCast.)
+                        video_path: name.clone(),
                         name,
-                        video_path: String::new(), // MF uses activation objects, not paths
                         audio_matches,
                     });
                 }
@@ -363,7 +381,9 @@ fn enumerate_devices_windows() -> Vec<CaptureDevice> {
         })();
 
         MFShutdown().ok();
-        CoUninitialize();
+        if owns_com {
+            CoUninitialize();
+        }
 
         if let Some(devs) = result {
             devices = devs;

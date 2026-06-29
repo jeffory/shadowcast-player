@@ -53,10 +53,7 @@ impl AppConfig {
                     let mut settings = plugin_table.clone();
                     settings.remove("enabled");
 
-                    plugins.insert(
-                        name.clone(),
-                        PluginEntry { enabled, settings },
-                    );
+                    plugins.insert(name.clone(), PluginEntry { enabled, settings });
                 }
             }
         }
@@ -94,10 +91,7 @@ host = "127.0.0.1"
         assert!(settings.is_some());
         let settings = settings.unwrap();
         assert_eq!(settings.get("port").unwrap().as_integer(), Some(8080));
-        assert_eq!(
-            settings.get("host").unwrap().as_str(),
-            Some("127.0.0.1")
-        );
+        assert_eq!(settings.get("host").unwrap().as_str(), Some("127.0.0.1"));
         assert!(settings.get("enabled").is_none());
     }
 
