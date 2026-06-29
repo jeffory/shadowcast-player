@@ -71,9 +71,8 @@ impl V4l2Source {
 
     fn ensure_device(&mut self) -> Result<&Device> {
         if self.device.is_none() {
-            self.device = Some(
-                Device::with_path(&self.device_path).context("Failed to reopen V4L2 device")?,
-            );
+            self.device =
+                Some(Device::with_path(&self.device_path).context("Failed to reopen V4L2 device")?);
         }
         Ok(self.device.as_ref().unwrap())
     }

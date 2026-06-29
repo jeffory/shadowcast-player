@@ -309,7 +309,7 @@ fn enumerate_devices_windows() -> Vec<CaptureDevice> {
     unsafe {
         let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
         let owns_com = match hr.0 {
-            0 | 1 => true, // S_OK or S_FALSE — we initialized it
+            0 | 1 => true,               // S_OK or S_FALSE — we initialized it
             RPC_E_CHANGED_MODE => false, // already initialized in another mode
             _ => return devices,
         };

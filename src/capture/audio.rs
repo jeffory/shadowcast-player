@@ -50,7 +50,7 @@ fn pick_input_config(device: &cpal::Device) -> Result<SupportedStreamConfig> {
             let Some(pref) = format_preference(range.sample_format()) else {
                 continue;
             };
-            if best.as_ref().map_or(true, |(p, _)| pref < *p) {
+            if best.as_ref().is_none_or(|(p, _)| pref < *p) {
                 best = Some((pref, range));
             }
         }
@@ -83,7 +83,7 @@ fn pick_output_config(
             let Some(pref) = format_preference(range.sample_format()) else {
                 continue;
             };
-            if best.as_ref().map_or(true, |(p, _)| pref < *p) {
+            if best.as_ref().is_none_or(|(p, _)| pref < *p) {
                 best = Some((pref, range));
             }
         }
