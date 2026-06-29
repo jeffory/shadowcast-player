@@ -78,15 +78,54 @@ jobs:
           echo "$FFMPEG_DIR\bin" >> $env:GITHUB_PATH
 
       - name: Build release binary
+        # On Linux, embed an $ORIGIN-relative RPATH so the binary loads the
+        # FFmpeg libraries bundled next to it (in ./lib) rather than the host's.
+        # --disable-new-dtags emits DT_RPATH (not DT_RUNPATH) so the search path
+        # also applies to FFmpeg's own transitive deps (codec libs like libx264).
+        env:
+          RUSTFLAGS: ${{ runner.os == 'Linux' && '-C link-arg=-Wl,-rpath,$ORIGIN/lib -C link-arg=-Wl,--disable-new-dtags' || '' }}
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
-          mkdir -p staging
-          cp target/${{ matrix.target }}/release/shadowcast-player staging/
+          set -euo pipefail
+          BIN=target/${{ matrix.target }}/release/shadowcast-player
+          mkdir -p staging/lib
+          cp "$BIN" staging/
+
+          # Bundle the FFmpeg shared libraries (and the codec libs they pull in)
+          # so the binary runs on systems whose FFmpeg major version differs from
+          # the build runner's. Seed from the libav*/libsw*/libpostproc* libs the
+          # binary links, then walk their dependencies, skipping libraries every
+          # Linux desktop already provides (libc, the X11/Wayland/GL display
+          # stack, ALSA, VA-API) so we don't override the host's graphics/audio.
+          # Matched against the library basename: skip if it starts with one of
+          # these tokens followed by a '.' or '-' (so e.g. libX11-xcb.so is
+          # skipped, but libmp3lame.so — which starts with "libm" — is not).
+          skip='^(ld-linux|linux-vdso|libc|libm|libdl|libpthread|librt|libutil|libresolv|libgcc_s|libstdc\+\+|libX11|libxcb|libXau|libXdmcp|libXext|libXfixes|libwayland|libdrm|libGL|libGLX|libGLdispatch|libEGL|libgbm|libglapi|libasound|libva|libvdpau)[-.]'
+
+          declare -A seen
+          queue=()
+          while read -r lib; do
+            [ -n "$lib" ] && queue+=("$lib")
+          done < <(ldd "$BIN" | awk '/=> \//{print $3}' | grep -E '/lib(av|sw|postproc)' || true)
+
+          while [ ${#queue[@]} -gt 0 ]; do
+            cur="${queue[0]}"; queue=("${queue[@]:1}")
+            base=$(basename "$cur")
+            if [ -n "${seen[$base]:-}" ]; then continue; fi
+            seen[$base]=1
+            if echo "$base" | grep -Eq "$skip"; then continue; fi
+            cp -Lv "$cur" staging/lib/
+            while read -r dep; do
+              [ -n "$dep" ] && queue+=("$dep")
+            done < <(ldd "$cur" 2>/dev/null | awk '/=> \//{print $3}')
+          done
+
+          echo "Bundled libraries:"; ls -1 staging/lib
           cd staging
-          tar czf ../${{ matrix.artifact }}.tar.gz shadowcast-player
+          tar czf ../${{ matrix.artifact }}.tar.gz shadowcast-player lib
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
