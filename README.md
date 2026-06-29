@@ -45,6 +45,49 @@ peak frame 14.22 ms
 
 Enabling the overlay also logs the same line to the console (`RUST_LOG=info`) so you have a record across a session.
 
+## Download
+
+Prebuilt binaries for each release are on the [Releases page](https://github.com/jeffory/shadowcast-player/releases/latest). The Linux artifacts are built on Ubuntu 22.04 (glibc 2.35) for broad distro compatibility and bundle their own FFmpeg, so no system FFmpeg install is required.
+
+### Linux
+
+**AppImage (recommended)** — a single self-contained file:
+
+```bash
+chmod +x shadowcast-player-linux-x86_64.AppImage
+./shadowcast-player-linux-x86_64.AppImage
+```
+
+AppImages need FUSE. If you hit a FUSE error, either install it (`sudo dnf install fuse-libs` / `sudo apt install libfuse2`) or run without it:
+
+```bash
+./shadowcast-player-linux-x86_64.AppImage --appimage-extract-and-run
+```
+
+The AppImage carries embedded update information, so app managers like [GearLever](https://flathub.org/apps/it.mijorus.gearlever) can add it to your application menu and keep it updated automatically from GitHub releases.
+
+**Tarball** — the binary plus its bundled FFmpeg libraries:
+
+```bash
+mkdir shadowcast-player && tar xzf shadowcast-player-linux-x86_64.tar.gz -C shadowcast-player
+cd shadowcast-player && ./shadowcast-player
+```
+
+Keep the `shadowcast-player` binary and the `lib/` folder together — the binary loads its FFmpeg libraries from `./lib`.
+
+### macOS
+
+```bash
+tar xzf shadowcast-player-macos-aarch64.tar.gz
+./shadowcast-player
+```
+
+If Gatekeeper blocks the unsigned binary, clear its quarantine flag: `xattr -dr com.apple.quarantine shadowcast-player`.
+
+### Windows
+
+Extract `shadowcast-player-windows-x86_64.zip` and run `shadowcast-player.exe`. The required FFmpeg DLLs are bundled in the same folder.
+
 ## Building
 
 ### Prerequisites
