@@ -172,6 +172,15 @@ jobs:
             echo "Terminal=false"
           } > shadowcast-player.desktop
 
+          # Embed AppImage update information so updaters (GearLever,
+          # AppImageUpdate) can pull new versions straight from GitHub releases.
+          # The gh-releases-zsync transport tracks the 'latest' release and the
+          # matching .zsync asset; providing it also makes the plugin emit that
+          # .zsync file, which we upload alongside the AppImage.
+          owner="${GITHUB_REPOSITORY%%/*}"
+          repo="${GITHUB_REPOSITORY##*/}"
+          export UPDATE_INFORMATION="gh-releases-zsync|${owner}|${repo}|latest|${{ matrix.artifact }}.AppImage.zsync"
+
           # linuxdeploy bundles the binary's shared-library closure (it ships its
           # own exclude list for the host graphics/driver stack) and emits the
           # AppImage. OUTPUT pins the final filename.
@@ -181,7 +190,9 @@ jobs:
             --desktop-file shadowcast-player.desktop \
             --icon-file "$ICON" \
             --output appimage
-          ls -la ${{ matrix.artifact }}.AppImage
+
+          # Both the AppImage and its update-feed .zsync must be present.
+          ls -la ${{ matrix.artifact }}.AppImage ${{ matrix.artifact }}.AppImage.zsync
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
@@ -210,7 +221,7 @@ jobs:
           set -euo pipefail
           case "$RUNNER_OS" in
             Windows) files=("$ARTIFACT.zip") ;;
-            Linux)   files=("$ARTIFACT.tar.gz" "$ARTIFACT.AppImage") ;;
+            Linux)   files=("$ARTIFACT.tar.gz" "$ARTIFACT.AppImage" "$ARTIFACT.AppImage.zsync") ;;
             *)       files=("$ARTIFACT.tar.gz") ;;
           esac
           gh release upload "$TAG" "${files[@]}" --clobber
