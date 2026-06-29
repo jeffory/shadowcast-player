@@ -16,7 +16,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Build on the oldest supported Ubuntu so the bundled libs / AppImage
+          # link against an older glibc and run on a wider range of distros.
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact: shadowcast-player-linux-x86_64
           - os: macos-latest
@@ -43,8 +45,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-release-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-release-cargo-
+          key: ${{ matrix.os }}-release-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ matrix.os }}-release-cargo-
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -59,7 +61,11 @@ jobs:
             libswscale-dev \
             libswresample-dev \
             pkg-config \
-            clang
+            clang \
+            patchelf \
+            file \
+            desktop-file-utils \
+            imagemagick
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
@@ -127,6 +133,56 @@ jobs:
           cd staging
           tar czf ../${{ matrix.artifact }}.tar.gz shadowcast-player lib
 
+      - name: Build AppImage (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          SRC_ICON=assets/shadowcast.png
+          if [ ! -f "$SRC_ICON" ]; then
+            echo "::error::AppImage icon not found at $SRC_ICON — add a square PNG named shadowcast.png under assets/."
+            exit 1
+          fi
+          # Normalize to the standard AppImage icon size (icon name = 'shadowcast',
+          # matching the desktop Icon= key below). Source art is left untouched.
+          ICON=shadowcast.png
+          convert "$SRC_ICON" -resize 256x256 "$ICON"
+
+          # Fetch linuxdeploy + its AppImage plugin (self-contained AppImages).
+          base=https://github.com/linuxdeploy
+          curl -fsSL -o linuxdeploy "$base/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+          curl -fsSL -o linuxdeploy-plugin-appimage "$base/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage"
+          chmod +x linuxdeploy linuxdeploy-plugin-appimage
+          # GitHub runners have no FUSE; run the AppImage tools via extraction.
+          export APPIMAGE_EXTRACT_AND_RUN=1
+
+          # Assemble the AppDir from the already-compiled binary (no rebuild).
+          rm -rf AppDir
+          mkdir -p AppDir/usr/bin
+          cp target/${{ matrix.target }}/release/shadowcast-player AppDir/usr/bin/
+
+          # Build the .desktop entry line-by-line to avoid heredoc indentation.
+          {
+            echo "[Desktop Entry]"
+            echo "Type=Application"
+            echo "Name=ShadowCast Player"
+            echo "Comment=Capture and record video from ShadowCast devices"
+            echo "Exec=shadowcast-player"
+            echo "Icon=shadowcast"
+            echo "Categories=AudioVideo;Video;"
+            echo "Terminal=false"
+          } > shadowcast-player.desktop
+
+          # linuxdeploy bundles the binary's shared-library closure (it ships its
+          # own exclude list for the host graphics/driver stack) and emits the
+          # AppImage. OUTPUT pins the final filename.
+          OUTPUT=${{ matrix.artifact }}.AppImage ./linuxdeploy \
+            --appdir AppDir \
+            --executable AppDir/usr/bin/shadowcast-player \
+            --desktop-file shadowcast-player.desktop \
+            --icon-file "$ICON" \
+            --output appimage
+          ls -la ${{ matrix.artifact }}.AppImage
+
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -144,7 +200,17 @@ jobs:
           Copy-Item "$env:FFMPEG_DIR\bin\*.dll" staging\
           Compress-Archive -Path staging\* -DestinationPath "${{ matrix.artifact }}.zip"
 
-      - name: Upload release asset
+      - name: Upload release assets
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload ${{ github.event.release.tag_name }} ${{ matrix.artifact }}.${{ runner.os == 'Windows' && 'zip' || 'tar.gz' }}
+          TAG: ${{ github.event.release.tag_name }}
+          ARTIFACT: ${{ matrix.artifact }}
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Windows) files=("$ARTIFACT.zip") ;;
+            Linux)   files=("$ARTIFACT.tar.gz" "$ARTIFACT.AppImage") ;;
+            *)       files=("$ARTIFACT.tar.gz") ;;
+          esac
+          gh release upload "$TAG" "${files[@]}" --clobber
