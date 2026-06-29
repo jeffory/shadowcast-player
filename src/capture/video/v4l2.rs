@@ -188,8 +188,7 @@ impl VideoSource for V4l2Source {
                     for interval in intervals {
                         match interval.interval {
                             FrameIntervalEnum::Discrete(frac) => {
-                                if frac.numerator > 0 {
-                                    let fps = frac.denominator / frac.numerator;
+                                if let Some(fps) = frac.denominator.checked_div(frac.numerator) {
                                     formats.push(CaptureFormat {
                                         width: discrete.width,
                                         height: discrete.height,

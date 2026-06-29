@@ -19,6 +19,12 @@ pub struct PluginHost {
     command_tx: Sender<AppCommand>,
 }
 
+impl Default for PluginHost {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PluginHost {
     pub fn new() -> Self {
         let (command_tx, command_rx) = crossbeam_channel::unbounded();
